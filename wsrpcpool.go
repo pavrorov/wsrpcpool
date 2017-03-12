@@ -1,5 +1,6 @@
-/* RPC with a pool of providers each connected via web-socket. */
+/* RPC with a pool of providers each connected via a web-socket. */
 package wsrpcpool
+// The pool server module
 
 import (
 	"crypto/tls"
@@ -10,21 +11,24 @@ import (
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"sync"
+	"errors"
 )
 
-/* A Web-socket connection endpoint for RPC provideres. */
+/* PoolServer is used to listen on a set of web-socket URLs for RPC
+providers. */
 type PoolServer struct {
 	http.Server
 	PoolMap     map[string]chan *rpc.Call
 	DefaultPool chan *rpc.Call
 }
 
-/* Plain PoolServer instance. */
+/* NewPool returns a plain PoolServer instance. */
 func NewPool() *PoolServer {
 	return &PoolServer{}
 }
 
-/* PoolServer instance equipped with the given SSL certificate. */
+/* NewPoolTLS returns a PoolServer instance equipped with the given
+SSL certificate. */
 func NewPoolTLS(certfile, keyfile string) (*PoolServer, error) {
 	pool := NewPool()
 	if err := pool.AppendCertificate(certfile, keyfile); err != nil {
@@ -33,48 +37,8 @@ func NewPoolTLS(certfile, keyfile string) (*PoolServer, error) {
 	return pool, nil
 }
 
-/* Appends an SSL certificate to the set of server certificates loading
-it from the pair of public certificate and private key files. */
-func (pool *PoolServer) AppendCertificate(certfile, keyfile string) error {
-	if pool.TLSConfig == nil {
-		pool.TLSConfig = &tls.Config{}
-	}
-
-	cert, err := tls.LoadX509KeyPair(certfile, keyfile)
-	if err != nil {
-		return err
-	}
-
-	pool.TLSConfig.Certificates = append(pool.TLSConfig.Certificates, cert)
-	pool.TLSConfig.BuildNameToCertificate()
-
-	return nil
-}
-
-/* Appends the given SSL root CA certificate files to the set of client
-CAs to verify client connections against. */
-func (pool *PoolServer) AppendClientCAs(clientCAs ...string) error {
-	if pool.TLSConfig == nil {
-		pool.TLSConfig = &tls.Config{}
-	}
-	if pool.TLSConfig.ClientCAs == nil {
-		pool.TLSConfig.ClientCAs = x509.NewCertPool()
-	}
-
-	for _, caFile := range clientCAs {
-		caCert, err := ioutil.ReadFile(caFile)
-		if err != nil {
-			return err
-		}
-		pool.TLSConfig.ClientCAs.AppendCertsFromPEM(caCert)
-	}
-
-	pool.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
-	return nil
-}
-
-/* PoolServer instance equipped with the given SSL certificate
-and a root CA certificates for client authentication. */
+/* NewPoolTLSAuth returns a PoolServer instance equipped with the given
+SSL certificate and a root CA certificates for client authentication. */
 func NewPoolTLSAuth(certfile, keyfile string, clientCAs ...string) (*PoolServer, error) {
 	pool, err := NewPoolTLS(certfile, keyfile)
 	if err != nil {
@@ -89,13 +53,66 @@ func NewPoolTLSAuth(certfile, keyfile string, clientCAs ...string) (*PoolServer,
 	return pool, err
 }
 
-/* Passes the given call to the client. */
+/* AppendCertificate appends an SSL certificate to the set of server
+certificates loading it from the pair of public certificate and private
+key files. */
+func (pool *PoolServer) AppendCertificate(certfile, keyfile string) error {
+	if pool.TLSConfig == nil {
+		pool.TLSConfig = &tls.Config{}
+	}
+	return appendCertificate(pool.TLSConfig, certfile, keyfile)
+}
+
+/* appendCertificate appends an SSL certificate to the given tls.Config
+loading it from the pair of public certificate and private key files. */
+func appendCertificate(tlsConfig *tls.Config, certfile, keyfile string) error {
+	cert, err := tls.LoadX509KeyPair(certfile, keyfile)
+	if err != nil {
+		return err
+	}
+	tlsConfig.Certificates = append(tlsConfig.Certificates, cert)
+	tlsConfig.BuildNameToCertificate()
+	return nil
+}
+
+/* AppendClientCAs appends the given SSL root CA certificate files to the
+set of client CAs to verify client connections against. */
+func (pool *PoolServer) AppendClientCAs(clientCAs ...string) error {
+	if pool.TLSConfig == nil {
+		pool.TLSConfig = &tls.Config{}
+	}
+	if pool.TLSConfig.ClientCAs == nil {
+		pool.TLSConfig.ClientCAs = x509.NewCertPool()
+	}
+	err := appendCAs(pool.TLSConfig.ClientCAs, clientCAs...)
+	if err == nil {
+		pool.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return err
+}
+
+/* appendCAs appends the given SSL root CA certificate files to the
+given CA pool. */
+func appendCAs(caPool *x509.CertPool, caCerts ...string) error {
+	for _, caFile := range caCerts {
+		caCert, err := ioutil.ReadFile(caFile)
+		if err != nil {
+			return err
+		}
+		if !caPool.AppendCertsFromPEM(caCert) {
+			return errors.New("No certificates parsed")
+		}
+	}
+	return nil
+}
+
+/* invoke passes the given call to the client. */
 func invoke(client *rpc.Client, call *rpc.Call) *rpc.Call {
 	return client.Go(call.ServiceMethod, call.Args, call.Reply, call.Done)
 }
 
-/* Associates the given path with the set of remote objects or make
-it the default path if no object names given. */
+/* BindPath associates the given path with the set of remote objects or
+makes it the default path if no object names given. */
 func (pool *PoolServer) BindPath(path string, names ...string) {
 	if pool.Handler == nil {
 		pool.Handler = http.NewServeMux()
@@ -141,4 +158,16 @@ func (pool *PoolServer) BindPath(path string, names ...string) {
 			client.Close()
 		}))
 	}
+}
+
+/* ListenAndServe listens the configured address (host and port) with
+no SSL encryption. */
+func (pool *PoolServer) ListenAndServe() error {
+	return pool.Server.ListenAndServe()
+}
+
+/* ListenAndServeTLS listens the configured address (host and port)
+with SSL encryption on. */
+func (pool *PoolServer) ListenAndServeTLS() error {
+	return pool.Server.ListenAndServeTLS("", "")
 }
