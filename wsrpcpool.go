@@ -18,9 +18,19 @@ import (
 providers. */
 type PoolServer struct {
 	http.Server
+	// Provider name to a call channel map
 	PoolMap     map[string]chan *rpc.Call
+	// Default call channel
 	DefaultPool chan *rpc.Call
 }
+
+
+var (
+	// ErrNoDefaultPool signals that provider isn't found and there is no default pool
+	ErrNoDefaultPool = errors.New("No default path is bound")
+	// ErrNoCertsParsed signals that no SSL certificates were found in the given file
+	ErrNoCertsParsed = errors.New("No certificates parsed")
+)
 
 /* NewPool returns a plain PoolServer instance. */
 func NewPool() *PoolServer {
@@ -100,7 +110,7 @@ func appendCAs(caPool *x509.CertPool, caCerts ...string) error {
 			return err
 		}
 		if !caPool.AppendCertsFromPEM(caCert) {
-			return errors.New("No certificates parsed")
+			return ErrNoCertsParsed
 		}
 	}
 	return nil
@@ -111,20 +121,20 @@ func invoke(client *rpc.Client, call *rpc.Call) *rpc.Call {
 	return client.Go(call.ServiceMethod, call.Args, call.Reply, call.Done)
 }
 
-/* BindPath associates the given path with the set of remote objects or
-makes it the default path if no object names given. */
-func (pool *PoolServer) BindPath(path string, names ...string) {
+/* BindPath associates the given path with the set of remote providers or
+makes it the default path if no object provider names given. */
+func (pool *PoolServer) BindPath(path string, providers ...string) {
 	if pool.Handler == nil {
 		pool.Handler = http.NewServeMux()
 	}
 
 	mux := pool.Handler.(*http.ServeMux)
 
-	if len(names) > 0 {
+	if len(providers) > 0 {
 		if pool.PoolMap == nil {
 			pool.PoolMap = make(map[string]chan *rpc.Call)
 		}
-		for _, name := range names {
+		for _, name := range providers {
 			if pool.PoolMap[name] == nil {
 				pool.PoolMap[name] = make(chan *rpc.Call)
 			}
@@ -132,7 +142,7 @@ func (pool *PoolServer) BindPath(path string, names ...string) {
 		mux.Handle(path, websocket.Handler(func(ws *websocket.Conn) {
 			var wg sync.WaitGroup
 			client := jsonrpc.NewClient(ws)
-			for _, name := range names {
+			for _, name := range providers {
 				callIn := pool.PoolMap[name]
 				go func() {
 					defer wg.Done()
@@ -141,7 +151,7 @@ func (pool *PoolServer) BindPath(path string, names ...string) {
 					}
 				}()
 			}
-			wg.Add(len(names))
+			wg.Add(len(providers))
 			wg.Wait()
 			client.Close()
 		}))
@@ -170,4 +180,42 @@ func (pool *PoolServer) ListenAndServe() error {
 with SSL encryption on. */
 func (pool *PoolServer) ListenAndServeTLS() error {
 	return pool.Server.ListenAndServeTLS("", "")
+}
+
+/* Go invokes the given remote function asynchronously. The name of the
+provider is first searched in the PoolMap and the DefaultPool is used
+if it isn't there. If done is nil, a new channel is allocated and
+passed in the return value. See net/rpc package for details. */
+func (pool *PoolServer) Go(provider, funcName string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
+	callIn := pool.PoolMap[provider]
+	if callIn == nil {
+		callIn = pool.DefaultPool
+	}
+	if callIn == nil {
+		return nil, ErrNoDefaultPool
+	}
+
+	call := &rpc.Call{
+		ServiceMethod: provider + "." + funcName,
+		Args: args,
+		Reply: reply,
+	}
+	if done == nil {
+		done = make(chan *rpc.Call, 1)
+	}
+	call.Done = done
+
+	callIn <- call
+	return call, nil
+}
+
+/* Call invokes the given remote function and waits for it to complete,
+returning its error status. */
+func (pool *PoolServer) Call(provider, funcName string, args interface{}, reply interface{}) error {
+	if call, err := pool.Go(provider, funcName, args, reply, nil); err == nil {
+		call = <-call.Done
+		return call.Error
+	} else {
+		return err
+	}
 }
