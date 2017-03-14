@@ -121,9 +121,9 @@ func invoke(client *rpc.Client, call *rpc.Call) *rpc.Call {
 	return client.Go(call.ServiceMethod, call.Args, call.Reply, call.Done)
 }
 
-/* BindPath associates the given path with the set of remote providers or
+/* Bind associates the given path with the set of remote providers or
 makes it the default path if no object provider names given. */
-func (pool *PoolServer) BindPath(path string, providers ...string) {
+func (pool *PoolServer) Bind(path string, providers ...string) {
 	if pool.Handler == nil {
 		pool.Handler = http.NewServeMux()
 	}
