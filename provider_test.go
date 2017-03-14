@@ -26,13 +26,7 @@ func TestNewProviderTLSAuth(t *testing.T) {
 	if p == nil {
 		t.Fatal()
 	}
-	if p.Config.TlsConfig == nil {
-		t.Fatal("TlsConfig is nil")
-	}
-	csLen := len(p.Config.TlsConfig.Certificates)
-	if csLen != 1 {
-		t.Errorf("Expected 1 certificate, got %d\n", csLen)
-	}
+	checkProviderCerts(t, p, 1, 0)
 }
 
 /* TestNewProviderCustomCA tests the NewProvider works as expected with a custom root CA cert. */
@@ -44,20 +38,7 @@ func TestNewProviderCustomCA(t *testing.T) {
 	if p == nil {
 		t.Fatal()
 	}
-	if p.Config.TlsConfig == nil {
-		t.Fatal("TLSConfig is nil")
-	}
-	csLen := len(p.Config.TlsConfig.Certificates)
-	if csLen != 0 {
-		t.Errorf("Expected 0 certificates, got %d\n", csLen)
-	}
-	if p.Config.TlsConfig.RootCAs == nil {
-		t.Fatal("Root CA pool is nil")
-	}
-	subjs := p.Config.TlsConfig.RootCAs.Subjects();
-	if len(subjs) != 1 {
-		t.Errorf("Expected 1 certificate in the root CA pool, got %d\n", len(subjs))
-	}
+	checkProviderCerts(t, p, 0, 1)
 }
 
 /* TestNewProviderTLSAuthCustomCA tests the NewProviderTLSAuth works as expected with a custom root CA cert. */
@@ -69,18 +50,27 @@ func TestNewProviderTLSAuthCustomCA(t *testing.T) {
 	if p == nil {
 		t.Fatal()
 	}
+	checkProviderCerts(t, p, 1, 1)
+}
+
+/* checkProviderCerts checks that a specified number of auth and root CA
+certificates are loaded into the TlsConfig of the provider. */
+func checkProviderCerts(t *testing.T, p *Provider, certs, rootCAs int) {
 	if p.Config.TlsConfig == nil {
 		t.Fatal("TLSConfig is nil")
 	}
 	csLen := len(p.Config.TlsConfig.Certificates)
-	if csLen != 1 {
-		t.Errorf("Expected 0 certificates, got %d\n", csLen)
+	if csLen != certs {
+		t.Errorf("Expected %d certificates, got %d\n", certs, csLen)
 	}
 	if p.Config.TlsConfig.RootCAs == nil {
-		t.Fatal("Root CA pool is nil")
-	}
-	subjs := p.Config.TlsConfig.RootCAs.Subjects();
-	if len(subjs) != 1 {
-		t.Errorf("Expected 1 certificate in the root CA pool, got %d\n", len(subjs))
+		if rootCAs > 0 {
+			t.Fatal("Root CA pool is nil")
+		}
+	} else {
+		subjs := p.Config.TlsConfig.RootCAs.Subjects();
+		if len(subjs) != rootCAs {
+			t.Errorf("Expected %d certificate in the root CA pool, got %d\n", rootCAs, len(subjs))
+		}
 	}
 }

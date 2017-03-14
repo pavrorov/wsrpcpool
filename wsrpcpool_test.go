@@ -23,13 +23,7 @@ func TestNewPoolTLS(t *testing.T) {
 	if pool == nil {
 		t.Fatal("Pool is nil")
 	}
-	if pool.Server.TLSConfig == nil {
-		t.Fatal("TLSConfig is nil")
-	}
-	csLen := len(pool.Server.TLSConfig.Certificates)
-	if csLen != 1 {
-		t.Errorf("Expected 1 certificate, got %d\n", csLen)
-	}
+	checkPoolCerts(t, pool, 1, 0)
 }
 
 /* TestNewPoolTLSAuth tests the NewPoolTLSAuth works as expected. */
@@ -41,19 +35,29 @@ func TestNewPoolTLSAuth(t *testing.T) {
 	if pool == nil {
 		t.Fatal("Pool is nil")
 	}
+	checkPoolCerts(t, pool, 1, 1)
+}
+
+/* checkPoolCerts checks that a specified number of server and root CA
+certificates (for client verification) are loaded into the TLSConfig of
+the pool server. */
+func checkPoolCerts(t *testing.T, pool *PoolServer, certs, clientCAs int) {
 	if pool.Server.TLSConfig == nil {
 		t.Fatal("TLSConfig is nil")
 	}
 	csLen := len(pool.Server.TLSConfig.Certificates)
-	if csLen != 1 {
-		t.Errorf("Expected 1 certificate, got %d\n", csLen)
+	if csLen != certs {
+		t.Errorf("Expected %d certificate, got %d\n", certs, csLen)
 	}
 	if pool.Server.TLSConfig.ClientCAs == nil {
-		t.Fatal("Client CA pool is nil")
-	}
-	subjs := pool.Server.TLSConfig.ClientCAs.Subjects();
-	if len(subjs) != 1 {
-		t.Errorf("Expected 1 certificate in the client CA pool, got %d\n", len(subjs))
+		if clientCAs > 0 {
+			t.Fatal("Client CA pool is nil")
+		}
+	} else {
+		subjs := pool.Server.TLSConfig.ClientCAs.Subjects();
+		if len(subjs) != clientCAs {
+			t.Errorf("Expected %d certificate in the client CA pool, got %d\n", clientCAs, len(subjs))
+		}
 	}
 }
 
