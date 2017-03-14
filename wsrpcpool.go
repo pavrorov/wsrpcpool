@@ -88,6 +88,9 @@ func appendCertificate(tlsConfig *tls.Config, certfile, keyfile string) error {
 /* AppendClientCAs appends the given SSL root CA certificate files to the
 set of client CAs to verify client connections against. */
 func (pool *PoolServer) AppendClientCAs(clientCAs ...string) error {
+	if len(clientCAs) == 0 {
+		return nil
+	}
 	if pool.TLSConfig == nil {
 		pool.TLSConfig = &tls.Config{}
 	}

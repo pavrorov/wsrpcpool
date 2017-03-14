@@ -21,7 +21,14 @@ func TestNewPoolTLS(t *testing.T) {
 		t.Error(err)
 	}
 	if pool == nil {
-		t.Fail()
+		t.Fatal("Pool is nil")
+	}
+	if pool.Server.TLSConfig == nil {
+		t.Fatal("TLSConfig is nil")
+	}
+	csLen := len(pool.Server.TLSConfig.Certificates)
+	if csLen != 1 {
+		t.Errorf("Expected 1 certificate, got %d\n", csLen)
 	}
 }
 
@@ -32,7 +39,21 @@ func TestNewPoolTLSAuth(t *testing.T) {
 		t.Error(err)
 	}
 	if pool == nil {
-		t.Fail()
+		t.Fatal("Pool is nil")
+	}
+	if pool.Server.TLSConfig == nil {
+		t.Fatal("TLSConfig is nil")
+	}
+	csLen := len(pool.Server.TLSConfig.Certificates)
+	if csLen != 1 {
+		t.Errorf("Expected 1 certificate, got %d\n", csLen)
+	}
+	if pool.Server.TLSConfig.ClientCAs == nil {
+		t.Fatal("Client CA pool is nil")
+	}
+	subjs := pool.Server.TLSConfig.ClientCAs.Subjects();
+	if len(subjs) != 1 {
+		t.Errorf("Expected 1 certificate in the client CA pool, got %d\n", len(subjs))
 	}
 }
 

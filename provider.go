@@ -1,6 +1,4 @@
-/* RPC with a pool of providers each connected via a web-socket. */
 package wsrpcpool
-
 // The RPC provider module
 
 import (
@@ -27,22 +25,32 @@ type Provider struct {
 }
 
 /* NewProvider returns a new Provider instance tuned to the given pool URL
-with no SSL encryption. */
-func NewProvider(url string) (*Provider, error) {
+with no SSL client-side certificate authentication. The optional set of
+root CAs, if any, are used to validate the pool server certificate in the
+case wss:// URL is used. */
+func NewProvider(url string, rootCAs ...string) (*Provider, error) {
 	conf, err := websocket.NewConfig(url, "http://localhost/")
 	if err != nil {
 		return nil, err
 	} else {
-		return &Provider{Config: conf}, nil
+		p := &Provider{Config: conf}
+		if err := p.AppendRootCAs(rootCAs...); err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 }
 
 /* NewProviderTLS returns a Provider instance equipped with the given
-SSL certificate for authentication.*/
-func NewProviderTLS(url, certfile, keyfile string) (*Provider, error) {
+SSL certificate to authenticate itself with the pool server and an optional
+set of root CAs to validate the pool server certificate. */
+func NewProviderTLSAuth(url, certfile, keyfile string, rootCAs ...string) (*Provider, error) {
 	p, err := NewProvider(url)
 	if err == nil {
 		if err := p.AppendCertificate(certfile, keyfile); err != nil {
+			return nil, err
+		}
+		if err := p.AppendRootCAs(rootCAs...); err != nil {
 			return nil, err
 		}
 		return p, nil
@@ -62,8 +70,11 @@ func (p *Provider) AppendCertificate(certfile, keyfile string) error {
 }
 
 /* AppendRootCAs appends the given SSL root CA certificate files to the
-chain used to validate the pool server certificate. */
+set of ones that are used to validate the pool server certificate. */
 func (p *Provider) AppendRootCAs(rootCAs ...string) error {
+	if len(rootCAs) == 0 {
+		return nil
+	}
 	if p.Config.TlsConfig == nil {
 		p.Config.TlsConfig = &tls.Config{}
 	}
