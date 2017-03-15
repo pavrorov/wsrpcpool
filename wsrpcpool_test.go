@@ -1,6 +1,6 @@
 /* RPC with a pool of providers each connected via a web-socket. */
 package wsrpcpool
-// Pool server testing module
+// Main testing module
 
 import (
 	"testing"
@@ -86,4 +86,35 @@ func TestBindName(t *testing.T) {
 	if pool.PoolMap == nil {
 		t.Fatal("PoolMap[\"Test\"] is nil")
 	}
+}
+
+/* TestConnection tests for a successful provider to pool server connection
+over an unencrypted channel. */
+func TestConnection(t *testing.T) {
+	pool := NewPool()
+	if pool == nil {
+		t.Fatal("Unable to instantiate a plain pool")
+	}
+	pool.Bind("/")
+
+	ready := make(chan struct{})
+	go func() {
+		if err := pool.ListenAndServe("localhost:8080"); err != nil {
+			t.Fail(err)
+		}
+		ready<-struct{}{}
+	}()
+	<-ready
+
+	p, err := NewProvider("ws://localhost:8080/")
+	if err != nil {
+		t.Error(err)
+	}
+	if p == nil {
+		t.Fail("Unable to instantiate the provider")
+	}
+	if err = p.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
 }

@@ -8,7 +8,7 @@ import (
 
 /* TestNewProvider tests the NewProvider works as expected. */
 func TestNewProvider(t *testing.T) {
-	p, err := NewProvider("ws://localhost:8000/")
+	p, err := NewProvider("ws://localhost:8080/")
 	if err != nil {
 		t.Error(err)
 	}
@@ -19,7 +19,7 @@ func TestNewProvider(t *testing.T) {
 
 /* TestNewProviderTLSAuth tests the NewProviderTLSAuth works as expected. */
 func TestNewProviderTLSAuth(t *testing.T) {
-	p, err := NewProviderTLSAuth("wss://localhost:8001/", "testfiles/client.crt", "testfiles/client.key")
+	p, err := NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key")
 	if err != nil {
 		t.Error(err)
 	}
@@ -31,7 +31,7 @@ func TestNewProviderTLSAuth(t *testing.T) {
 
 /* TestNewProviderCustomCA tests the NewProvider works as expected with a custom root CA cert. */
 func TestNewProviderCustomCA(t *testing.T) {
-	p, err := NewProvider("wss://localhost:8001/", "testfiles/rootCA.crt")
+	p, err := NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
 	if err != nil {
 		t.Error(err)
 	}
@@ -43,7 +43,7 @@ func TestNewProviderCustomCA(t *testing.T) {
 
 /* TestNewProviderTLSAuthCustomCA tests the NewProviderTLSAuth works as expected with a custom root CA cert. */
 func TestNewProviderTLSAuthCustomCA(t *testing.T) {
-	p, err := NewProviderTLSAuth("wss://localhost:8001/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+	p, err := NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
 	if err != nil {
 		t.Error(err)
 	}
