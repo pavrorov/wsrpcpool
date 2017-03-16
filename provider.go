@@ -1,4 +1,5 @@
 package wsrpcpool
+
 // The RPC provider module
 
 import (
@@ -22,6 +23,19 @@ type Provider struct {
 	MaxAttempts int
 	// The delay between reconnections. The default is DefaultReconnectDelay (100ms).
 	Delay time.Duration
+}
+
+/* Provider connection represents a signle connection that handles RPC
+requests coming from a pool server. */
+type PoolConnection struct {
+	// Error channel
+	Error <-chan error
+	// Connected signal channel
+	Connected <-chan struct{}
+	// Closed signal channel
+	Closed <-chan struct{}
+	// Used to close the connection
+	stop chan struct{}
 }
 
 /* NewProvider returns a new Provider instance tuned to the given pool URL
@@ -84,40 +98,89 @@ func (p *Provider) AppendRootCAs(rootCAs ...string) error {
 	return appendCAs(p.Config.TlsConfig.RootCAs, rootCAs...)
 }
 
-/* Connect connects to the configured server pool URL and listens for
-incoming JSON-RPC messages to handle. It automatically reconnects
-if the connection is broken. Note, that it is possible to have multiple
-simultaneous connections with the same Provider and pool server.
-Don't forget to call rpc.Register() with your exported objects.*/
-func (p *Provider) Connect() error {
-	var err error
-	var attempts int = 0
-	for {
-		var ws *websocket.Conn
-		ws, err = websocket.DialConfig(p.Config)
-		attempts++
-		if err == nil {
-			jsonrpc.ServeConn(ws)
-		}
-		if attempts < p.MaxAttempts {
-			delay := p.Delay
-			if delay == 0 {
-				delay = DefaultDelay
-			}
-			if delay > 0 {
-				time.Sleep(delay)
-			}
-		} else {
-			break
-		}
+/*
+Connect connects to the configured server pool URL and
+asynchronously handles incoming JSON-RPC messages.
+The connection is automatically re-established when broken
+until MaxAttempts is exceeded.
+Don't forget to call rpc.Register() with your exported objects.
+*/
+func (p *Provider) ConnectAndServe() *PoolConnection {
+	var (
+		ws       *websocket.Conn
+		pc       PoolConnection
+		err      error
+		attempts int
+	)
+
+	pc.stop = make(chan struct{})
+	pc.Closed = pc.stop
+	errc := make(chan error, 1)
+	pc.Error = errc
+	connected := make(chan struct{})
+	pc.Connected = connected
+
+	if p.MaxAttempts < 0 {
+		close(pc.stop)
+		errc <- nil
+		close(errc)
+		return &pc
 	}
-	return err
+
+	go func() {
+	loop:
+		for {
+			ws, err = websocket.DialConfig(p.Config)
+			attempts++
+			connected <- struct{}{}
+
+			if err == nil {
+				done := make(chan struct{})
+				go func() {
+					select {
+					case <-done:
+					case <-pc.stop:
+					}
+					ws.Close()
+				}()
+
+				jsonrpc.ServeConn(ws)
+				close(done)
+			} else {
+				errc <- err
+			}
+
+			if attempts < p.MaxAttempts || p.MaxAttempts == 0 {
+				delay := p.Delay
+				if delay == 0 {
+					delay = DefaultDelay
+				}
+				if delay > 0 {
+					time.Sleep(delay)
+				}
+			} else {
+				break loop
+			}
+		}
+
+		errc <- err
+		close(errc)
+	}()
+
+	return &pc
 }
 
-/* ConnectMulti runs a given number of simultaneous connections using
-Connect().*/
-func (p *Provider) ConnectMulti(count int) {
+/* ConnectAndServeMulti asynchronously runs the given number of
+simultaneous connections using ConnectAndServe(). */
+func (p *Provider) ConnectAndServeMulti(count int) {
 	for n := 0; n < count; n++ {
-		go p.Connect()
+		go p.ConnectAndServe()
 	}
+}
+
+/* Close closes the connection and returns the last unread error
+from pc.Error. */
+func (pc *PoolConnection) Close() error {
+	close(pc.stop)
+	return <-pc.Error
 }

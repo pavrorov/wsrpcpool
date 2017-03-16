@@ -176,7 +176,7 @@ func (pool *PoolServer) Bind(path string, providers ...string) {
 /* ListenAndServe listens the given (or configured if "" is given) address
 ([host]:port) with no SSL encryption. */
 func (pool *PoolServer) ListenAndServe(addr string) error {
-	if addr != nil {
+	if addr != "" {
 		pool.Server.Addr = addr
 	}
 	return pool.Server.ListenAndServe()
@@ -185,7 +185,7 @@ func (pool *PoolServer) ListenAndServe(addr string) error {
 /* ListenAndServeTLS listens the listens the given (or configured if "" is given) address
 ([host]:port) with SSL encryption on. */
 func (pool *PoolServer) ListenAndServeTLS(addr string) error {
-	if addr != nil {
+	if addr != "" {
 		pool.Server.Addr = addr
 	}
 	return pool.Server.ListenAndServeTLS("", "")

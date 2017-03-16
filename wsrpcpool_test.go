@@ -100,7 +100,7 @@ func TestConnection(t *testing.T) {
 	ready := make(chan struct{})
 	go func() {
 		if err := pool.ListenAndServe("localhost:8080"); err != nil {
-			t.Fail(err)
+			t.Error(err)
 		}
 		ready<-struct{}{}
 	}()
@@ -111,10 +111,24 @@ func TestConnection(t *testing.T) {
 		t.Error(err)
 	}
 	if p == nil {
-		t.Fail("Unable to instantiate the provider")
+		t.Error("Unable to instantiate the provider")
 	}
-	if err = p.Connect(); err != nil {
-		t.Fatal(err)
+
+	p.MaxAttempts = 1
+	pc := p.ConnectAndServe()
+
+	var connected bool
+	select {
+	case <-pc.Connected:
+		connected = true
+	case <-pc.Closed:
 	}
-	p.Close()
+
+	if err = pc.Close(); err != nil {
+		t.Error(err)
+	} else {
+		if !connected {
+			t.Error("Not connected")
+		}
+	}
 }
