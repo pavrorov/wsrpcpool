@@ -1,5 +1,6 @@
 /* RPC with a pool of providers each connected via a web-socket. */
 package wsrpcpool
+
 // Main testing module
 
 import (
@@ -54,7 +55,7 @@ func checkPoolCerts(t *testing.T, pool *PoolServer, certs, clientCAs int) {
 			t.Fatal("Client CA pool is nil")
 		}
 	} else {
-		subjs := pool.Server.TLSConfig.ClientCAs.Subjects();
+		subjs := pool.Server.TLSConfig.ClientCAs.Subjects()
 		if len(subjs) != clientCAs {
 			t.Errorf("Expected %d certificate in the client CA pool, got %d\n", clientCAs, len(subjs))
 		}
@@ -97,14 +98,12 @@ func TestConnection(t *testing.T) {
 	}
 	pool.Bind("/")
 
-	ready := make(chan struct{})
 	go func() {
-		if err := pool.ListenAndServe("localhost:8080"); err != nil {
+		if err := pool.ListenAndUse("localhost:8080"); err != nil {
 			t.Error(err)
 		}
-		ready<-struct{}{}
 	}()
-	<-ready
+	<-pool.Listening
 
 	p, err := NewProvider("ws://localhost:8080/")
 	if err != nil {
@@ -130,5 +129,8 @@ func TestConnection(t *testing.T) {
 		if !connected {
 			t.Error("Not connected")
 		}
+	}
+	if err = pool.Close(); err != nil {
+		t.Error(err)
 	}
 }

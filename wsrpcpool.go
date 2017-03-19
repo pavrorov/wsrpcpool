@@ -1,29 +1,38 @@
 /* RPC with a pool of providers each connected via a web-socket. */
 package wsrpcpool
+
 // The pool server module
 
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"golang.org/x/net/websocket"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"sync"
-	"errors"
 )
 
 /* PoolServer is used to listen on a set of web-socket URLs for RPC
 providers. */
 type PoolServer struct {
-	http.Server
+	Server http.Server
 	// Provider name to a call channel map
-	PoolMap     map[string]chan *rpc.Call
+	PoolMap map[string]chan *rpc.Call
 	// Default call channel
 	DefaultPool chan *rpc.Call
+	// Used to signal the pool is listening for incoming connections
+	Listening <-chan struct{}
+	// Used to signal the pool is listening for incoming connections (pool side)
+	listening chan struct{}
+	// Used to signal the pool to stop
+	stop chan struct{}
+	// Used to return the error on close
+	errc chan error
 }
-
 
 var (
 	// ErrNoDefaultPool signals that provider isn't found and there is no default pool
@@ -34,7 +43,13 @@ var (
 
 /* NewPool returns a plain PoolServer instance. */
 func NewPool() *PoolServer {
-	return &PoolServer{}
+	listening := make(chan struct{}, 1)
+	return &PoolServer{
+		Listening: listening,
+		listening: listening,
+		stop: make(chan struct{}),
+		errc: make(chan error, 1),
+	}
 }
 
 /* NewPoolTLS returns a PoolServer instance equipped with the given
@@ -54,12 +69,10 @@ func NewPoolTLSAuth(certfile, keyfile string, clientCAs ...string) (*PoolServer,
 	if err != nil {
 		return nil, err
 	}
-
 	err = pool.AppendClientCAs(clientCAs...)
 	if err != nil {
 		return nil, err
 	}
-
 	return pool, err
 }
 
@@ -67,10 +80,10 @@ func NewPoolTLSAuth(certfile, keyfile string, clientCAs ...string) (*PoolServer,
 certificates loading it from the pair of public certificate and private
 key files. */
 func (pool *PoolServer) AppendCertificate(certfile, keyfile string) error {
-	if pool.TLSConfig == nil {
-		pool.TLSConfig = &tls.Config{}
+	if pool.Server.TLSConfig == nil {
+		pool.Server.TLSConfig = &tls.Config{}
 	}
-	return appendCertificate(pool.TLSConfig, certfile, keyfile)
+	return appendCertificate(pool.Server.TLSConfig, certfile, keyfile)
 }
 
 /* appendCertificate appends an SSL certificate to the given tls.Config
@@ -91,15 +104,15 @@ func (pool *PoolServer) AppendClientCAs(clientCAs ...string) error {
 	if len(clientCAs) == 0 {
 		return nil
 	}
-	if pool.TLSConfig == nil {
-		pool.TLSConfig = &tls.Config{}
+	if pool.Server.TLSConfig == nil {
+		pool.Server.TLSConfig = &tls.Config{}
 	}
-	if pool.TLSConfig.ClientCAs == nil {
-		pool.TLSConfig.ClientCAs = x509.NewCertPool()
+	if pool.Server.TLSConfig.ClientCAs == nil {
+		pool.Server.TLSConfig.ClientCAs = x509.NewCertPool()
 	}
-	err := appendCAs(pool.TLSConfig.ClientCAs, clientCAs...)
+	err := appendCAs(pool.Server.TLSConfig.ClientCAs, clientCAs...)
 	if err == nil {
-		pool.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		pool.Server.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return err
 }
@@ -127,11 +140,11 @@ func invoke(client *rpc.Client, call *rpc.Call) *rpc.Call {
 /* Bind associates the given path with the set of remote providers or
 makes it the default path if no object provider names given. */
 func (pool *PoolServer) Bind(path string, providers ...string) {
-	if pool.Handler == nil {
-		pool.Handler = http.NewServeMux()
+	if pool.Server.Handler == nil {
+		pool.Server.Handler = http.NewServeMux()
 	}
 
-	mux := pool.Handler.(*http.ServeMux)
+	mux := pool.Server.Handler.(*http.ServeMux)
 
 	if len(providers) > 0 {
 		if pool.PoolMap == nil {
@@ -173,22 +186,70 @@ func (pool *PoolServer) Bind(path string, providers ...string) {
 	}
 }
 
-/* ListenAndServe listens the given (or configured if "" is given) address
-([host]:port) with no SSL encryption. */
-func (pool *PoolServer) ListenAndServe(addr string) error {
-	if addr != "" {
-		pool.Server.Addr = addr
+/* listen returns the active listener for the current pool config
+and an error if any. It also send a signal over the "listening"
+channel. */
+func (pool *PoolServer) listen() (net.Listener, error) {
+	l, err := net.Listen("tcp", pool.Server.Addr)
+	if err != nil {
+		return nil, err
 	}
-	return pool.Server.ListenAndServe()
+	pool.listening <- struct{}{}
+	close(pool.listening)
+	return l, nil
 }
 
-/* ListenAndServeTLS listens the listens the given (or configured if "" is given) address
-([host]:port) with SSL encryption on. */
-func (pool *PoolServer) ListenAndServeTLS(addr string) error {
+/* use uses the given listener waiting for a signal on
+the "stop" channel. */
+func (pool *PoolServer) use(l net.Listener) error {
+	go func() {
+		err := pool.Server.Serve(l)
+		select {
+		case <-pool.stop: // FIXME: Check error code
+		default:
+			pool.errc <- err
+		}
+		close(pool.errc)
+	}()
+	
+	select {
+	case err := <-pool.errc:
+		return err
+	case <-pool.stop:
+		return l.Close()
+	}
+}
+
+/* ListenAndUse listens the given (or configured if "" is given) address
+([host]:port) with no SSL encryption. */
+func (pool *PoolServer) ListenAndUse(addr string) error {
 	if addr != "" {
 		pool.Server.Addr = addr
 	}
-	return pool.Server.ListenAndServeTLS("", "")
+	l, err := pool.listen()
+	if err != nil {
+		return err
+	}
+	return pool.use(l)
+}
+
+/* ListenAndUseTLS listens the listens the given (or configured if "" is given) address
+([host]:port) with SSL encryption on. */
+func (pool *PoolServer) ListenAndUseTLS(addr string) error {
+	if addr != "" {
+		pool.Server.Addr = addr
+	}
+	l, err := pool.listen()
+	if err != nil {
+		return err
+	}
+	return pool.use(tls.NewListener(l, pool.Server.TLSConfig))
+}
+
+/* Close closes the pool listener. */
+func (pool *PoolServer) Close() error {
+	close(pool.stop)
+	return <-pool.errc
 }
 
 /* Go invokes the given remote function asynchronously. The name of the
@@ -206,8 +267,8 @@ func (pool *PoolServer) Go(provider, funcName string, args interface{}, reply in
 
 	call := &rpc.Call{
 		ServiceMethod: provider + "." + funcName,
-		Args: args,
-		Reply: reply,
+		Args:          args,
+		Reply:         reply,
 	}
 	if done == nil {
 		done = make(chan *rpc.Call, 1)

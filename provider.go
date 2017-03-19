@@ -18,7 +18,7 @@ var (
 
 /* Provider is intended to connect to a PoolServer and handle RPC calls. */
 type Provider struct {
-	*websocket.Config
+	Config *websocket.Config
 	// Maximum number of connection attempts. Default is unlimited.*/
 	MaxAttempts int
 	// The delay between reconnections. The default is DefaultReconnectDelay (100ms).
@@ -117,7 +117,7 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 	pc.Closed = pc.stop
 	errc := make(chan error, 1)
 	pc.Error = errc
-	connected := make(chan struct{})
+	connected := make(chan struct{}, 1)
 	pc.Connected = connected
 
 	if p.MaxAttempts < 0 {
@@ -133,6 +133,7 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 			ws, err = websocket.DialConfig(p.Config)
 			attempts++
 			connected <- struct{}{}
+			close(connected)
 
 			if err == nil {
 				done := make(chan struct{})
@@ -146,8 +147,6 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 
 				jsonrpc.ServeConn(ws)
 				close(done)
-			} else {
-				errc <- err
 			}
 
 			if attempts < p.MaxAttempts || p.MaxAttempts == 0 {
