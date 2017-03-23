@@ -13,14 +13,13 @@ import (
 	"net/http"
 	"net/rpc"
 	"net/rpc/jsonrpc"
-	"sync"
 )
 
 /* PoolServer is used to listen on a set of web-socket URLs for RPC
 providers. */
 type PoolServer struct {
 	Server http.Server
-	// Provider name to a call channel map
+	// Provider name to call channel map
 	PoolMap map[string]chan *rpc.Call
 	// Default call channel
 	DefaultPool chan *rpc.Call
@@ -32,6 +31,8 @@ type PoolServer struct {
 	stop chan struct{}
 	// Used to return the error on close
 	errc chan error
+	// Path to call channel map
+	pathMap map[string]chan *rpc.Call
 }
 
 var (
@@ -47,8 +48,8 @@ func NewPool() *PoolServer {
 	return &PoolServer{
 		Listening: listening,
 		listening: listening,
-		stop: make(chan struct{}),
-		errc: make(chan error, 1),
+		stop:      make(chan struct{}),
+		errc:      make(chan error, 1),
 	}
 }
 
@@ -137,53 +138,44 @@ func invoke(client *rpc.Client, call *rpc.Call) *rpc.Call {
 	return client.Go(call.ServiceMethod, call.Args, call.Reply, call.Done)
 }
 
+/* handle returns the websocket.Handler that the passes calls from the
+given channel over a websocket connection. */
+func handle(callIn <-chan *rpc.Call) websocket.Handler {
+	return websocket.Handler(func(ws *websocket.Conn) {
+		client := jsonrpc.NewClient(ws)
+		for c := range callIn {
+			invoke(client, c)
+		}
+		client.Close()
+	})
+}
+
 /* Bind associates the given path with the set of remote providers or
 makes it the default path if no object provider names given. */
 func (pool *PoolServer) Bind(path string, providers ...string) {
 	if pool.Server.Handler == nil {
 		pool.Server.Handler = http.NewServeMux()
 	}
-
 	mux := pool.Server.Handler.(*http.ServeMux)
-
+	if pool.pathMap == nil {
+		pool.pathMap = make(map[string]chan *rpc.Call)
+	}
+	callIn := pool.pathMap[path]
+	if callIn == nil {
+		callIn = make(chan *rpc.Call)
+		pool.pathMap[path] = callIn
+	}
 	if len(providers) > 0 {
 		if pool.PoolMap == nil {
 			pool.PoolMap = make(map[string]chan *rpc.Call)
 		}
 		for _, name := range providers {
-			if pool.PoolMap[name] == nil {
-				pool.PoolMap[name] = make(chan *rpc.Call)
-			}
+			pool.PoolMap[name] = callIn
 		}
-		mux.Handle(path, websocket.Handler(func(ws *websocket.Conn) {
-			var wg sync.WaitGroup
-			client := jsonrpc.NewClient(ws)
-			for _, name := range providers {
-				callIn := pool.PoolMap[name]
-				go func() {
-					defer wg.Done()
-					for c := range callIn {
-						invoke(client, c)
-					}
-				}()
-			}
-			wg.Add(len(providers))
-			wg.Wait()
-			client.Close()
-		}))
 	} else {
-		if pool.DefaultPool == nil {
-			pool.DefaultPool = make(chan *rpc.Call)
-		}
-		chanIn := pool.DefaultPool
-		mux.Handle(path, websocket.Handler(func(ws *websocket.Conn) {
-			client := jsonrpc.NewClient(ws)
-			for c := range chanIn {
-				invoke(client, c)
-			}
-			client.Close()
-		}))
+		pool.DefaultPool = callIn
 	}
+	mux.Handle(path, handle(callIn))
 }
 
 /* listen returns the active listener for the current pool config
@@ -211,7 +203,7 @@ func (pool *PoolServer) use(l net.Listener) error {
 		}
 		close(pool.errc)
 	}()
-	
+
 	select {
 	case err := <-pool.errc:
 		return err
