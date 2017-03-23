@@ -138,13 +138,53 @@ func invoke(client *rpc.Client, call *rpc.Call) *rpc.Call {
 	return client.Go(call.ServiceMethod, call.Args, call.Reply, call.Done)
 }
 
+/* connObserver used to observe I/O errors in a websocket connection */
+type connObserver struct {
+	*websocket.Conn
+	ioError chan error
+}
+
+/* reportError sends the given error over the ioError channel
+if there is a free slot available and do nothing otherwise
+(i.e. non blocking). */
+func (conn *connObserver) reportError(err error) {
+	select {
+	case conn.ioError <- err:
+	default:
+	}
+}
+
+/* Read implements io.Reader. */
+func (conn *connObserver) Read(p []byte) (n int, err error) {
+	n, err = conn.Conn.Read(p)
+	if err != nil {
+		conn.reportError(err)
+	}
+	return
+}
+
+/* Write implements io.Writer. */
+func (conn *connObserver) Write(p []byte) (n int, err error) {
+	n, err = conn.Conn.Write(p)
+	if err != nil {
+		conn.reportError(err)
+	}
+	return
+}
+
 /* handle returns the websocket.Handler that the passes calls from the
 given channel over a websocket connection. */
 func handle(callIn <-chan *rpc.Call) websocket.Handler {
 	return websocket.Handler(func(ws *websocket.Conn) {
-		client := jsonrpc.NewClient(ws)
-		for c := range callIn {
-			invoke(client, c)
+		conn := &connObserver{ws, make(chan error, 10)}
+		client := jsonrpc.NewClient(conn)
+		for {
+			select {
+			case c := <-callIn:
+				invoke(client, c)
+			case <-conn.ioError:
+				break
+			}
 		}
 		client.Close()
 	})
