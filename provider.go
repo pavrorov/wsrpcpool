@@ -114,7 +114,8 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 	)
 
 	pc.stop = make(chan struct{})
-	pc.Closed = pc.stop
+	closed := make(chan struct{})
+	pc.Closed = closed
 	errc := make(chan error, 1)
 	pc.Error = errc
 	connected := make(chan struct{}, 1)
@@ -132,11 +133,12 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 		for {
 			ws, err = websocket.DialConfig(p.Config)
 			attempts++
-			connected <- struct{}{}
-			close(connected)
 
 			if err == nil {
-				done := make(chan struct{})
+				connected <- struct{}{}
+				close(connected)
+				
+				done := make(chan struct{})				
 				go func() {
 					select {
 					case <-done:
@@ -164,6 +166,7 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 
 		errc <- err
 		close(errc)
+		close(closed)
 	}()
 
 	return &pc
