@@ -198,6 +198,29 @@ func TestConnectionTLS(t *testing.T) {
 		})
 }
 
+/* TestConnectionTLS expects unsuccessful provider to pool server connection
+over an encrypted channel due to unknown server certificate. */
+func TestConnectionTLSFail(t *testing.T) {
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPoolTLS("testfiles/server.crt", "testfiles/server.key")
+		},
+		func(pool *PoolServer) error {
+			return pool.ListenAndUseTLS("localhost:8443")
+		},
+		func() (*Provider, error) {
+			return NewProvider("wss://localhost:8443/")
+		},
+		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+			pc, connected := tryConnect(p, 1)
+			if connected {
+				t.Error("Unexpected connection")
+			}
+			pc.Close()
+			return nil, nil
+		})
+}
+
 /* TestConnectionTLSAuth tests for a successful provider to pool server connection
 over an encrypted channel with client-side certificate authentication. */
 func TestConnectionTLSAuth(t *testing.T) {
