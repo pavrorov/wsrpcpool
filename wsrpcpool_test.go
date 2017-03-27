@@ -5,6 +5,8 @@ package wsrpcpool
 
 import (
 	"testing"
+	"net/rpc"
+	"errors"
 )
 
 /* TestNewPool tests the NewPool works as expected. */
@@ -129,7 +131,6 @@ func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen fu
 	if pool == nil {
 		t.Fatal("Unable to instantiate a plain pool")
 	}
-	pool.Bind("/")
 
 	go func() {
 		if err := listen(pool); err != nil {
@@ -162,6 +163,7 @@ func TestConnection(t *testing.T) {
 			return NewPool(), nil
 		},
 		func(pool *PoolServer) error {
+			pool.Bind("/")
 			return pool.ListenAndUse("localhost:8080")
 		},
 		func() (*Provider, error) {
@@ -184,6 +186,7 @@ func TestConnectionTLS(t *testing.T) {
 			return NewPoolTLS("testfiles/server.crt", "testfiles/server.key")
 		},
 		func(pool *PoolServer) error {
+			pool.Bind("/")
 			return pool.ListenAndUseTLS("localhost:8443")
 		},
 		func() (*Provider, error) {
@@ -206,6 +209,7 @@ func TestConnectionTLSFail(t *testing.T) {
 			return NewPoolTLS("testfiles/server.crt", "testfiles/server.key")
 		},
 		func(pool *PoolServer) error {
+			pool.Bind("/")
 			return pool.ListenAndUseTLS("localhost:8443")
 		},
 		func() (*Provider, error) {
@@ -229,6 +233,7 @@ func TestConnectionTLSAuth(t *testing.T) {
 			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
 		},
 		func(pool *PoolServer) error {
+			pool.Bind("/")
 			return pool.ListenAndUseTLS("localhost:8443")
 		},
 		func() (*Provider, error) {
@@ -252,6 +257,7 @@ func TestConnectionTLSAuthFail(t *testing.T) {
 			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
 		},
 		func(pool *PoolServer) error {
+			pool.Bind("/")
 			return pool.ListenAndUseTLS("localhost:8443")
 		},
 		func() (*Provider, error) {
@@ -264,5 +270,74 @@ func TestConnectionTLSAuthFail(t *testing.T) {
 			}
 			pc.Close()
 			return nil, nil
+		})
+}
+
+/* Test is used as the exported function provider for remote calls. */
+type Test struct {
+}
+
+/* TestFunc sets its return argument to the value of its first argument. */
+func (t *Test) TestFunc(arg int, reply *int) error {
+	*reply = arg
+	return nil
+}
+
+/* TestError returns the error value with the given text. It also sets
+its return value to the same string if the pointer is not nil. */
+func (t *Test) TestError(text string, reply *string) error {
+	if reply != nil {
+		*reply = text
+	}
+	return errors.New(text)
+}
+
+/* testCalls perform the series of remote calls using the Test type. */
+func testCalls(t *testing.T, p *Provider, pool *PoolServer) {
+	rpc.Register(&Test{})
+
+	var testval int = 1
+	var reply int
+	if err := pool.Call("Test", "TestFunc", testval, &reply); err != nil {
+		t.Error(err)
+	}
+	if reply != testval {
+		t.Error("Unexpected result")
+	}
+
+	var errtext = "Error text"
+	if err := pool.Call("Test", "TestError", errtext, nil); err == nil {
+		t.Error("Expected error")
+	} else {
+		if err.Error() != errtext {
+			t.Error(err)
+		}
+	}
+}
+
+/* TestCallTLSAuth tests for a successful method call over
+an encrypted channel with client-side certificate authentication. */
+func TestCallTLSAuth(t *testing.T) {
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
+		},
+		func(pool *PoolServer) error {
+			pool.Bind("/")
+			return pool.ListenAndUseTLS("localhost:8443")
+		},
+		func() (*Provider, error) {
+			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+		},
+		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+			pc, connected := tryConnect(p, 1)
+
+			if !connected {
+				t.Error("Not connected")
+			} else {
+				testCalls(t, p, pool)
+			}
+			
+			return pc, nil
 		})
 }
