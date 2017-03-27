@@ -91,18 +91,22 @@ func TestBindName(t *testing.T) {
 
 /* closeConnection closes the given pool and provider connections. */
 func closeConnection(t *testing.T, pool *PoolServer, pc *PoolConnection) {
-	if err := pc.Close(); err != nil {
-		t.Error(err)
+	if pc != nil {
+		if err := pc.Close(); err != nil {
+			t.Error(err)
+		}
 	}
-	if err := pool.Close(); err != nil {
-		t.Error(err)
+	if pool != nil {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
 	}
 }
 
-/* connectAndClose tests the given provider and pool server for a
-successful connection and then close them. */
-func connectAndClose(t *testing.T, pool *PoolServer, p *Provider) {
-	p.MaxAttempts = 1
+/* tryConnect tries to connect the given provider making a given number of
+attempts at most. Returns the new connection and the connected flag. */
+func tryConnect(p *Provider, maxattempts int) (*PoolConnection, bool) {
+	p.MaxAttempts = maxattempts
 	pc := p.ConnectAndServe()
 
 	var connected bool
@@ -112,8 +116,39 @@ func connectAndClose(t *testing.T, pool *PoolServer, p *Provider) {
 	case <-pc.Closed:
 	}
 
-	if !connected {
-		t.Error("Not connected")
+	return pc, connected
+}
+
+/* testConnection tests for a successful provider to pool server connection
+using the given callback functions. */
+func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen func(pool *PoolServer) error, getprovider func() (*Provider, error), connect func(p *Provider, pool *PoolServer) (*PoolConnection, error)) {
+	pool, err := getpool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool == nil {
+		t.Fatal("Unable to instantiate a plain pool")
+	}
+	pool.Bind("/")
+
+	go func() {
+		if err := listen(pool); err != nil {
+			t.Error(err)
+		}
+	}()
+	<-pool.Listening
+
+	p, err := getprovider()
+	if err != nil {
+		t.Error(err)
+	}
+	if p == nil {
+		t.Error("Unable to instantiate the provider")
+	}
+
+	pc, err := connect(p, pool)
+	if err != nil {
+		t.Error(err)
 	}
 
 	closeConnection(t, pool, pc)
@@ -122,137 +157,89 @@ func connectAndClose(t *testing.T, pool *PoolServer, p *Provider) {
 /* TestConnection tests for a successful provider to pool server connection
 over an unencrypted channel. */
 func TestConnection(t *testing.T) {
-	pool := NewPool()
-	if pool == nil {
-		t.Fatal("Unable to instantiate a plain pool")
-	}
-	pool.Bind("/")
-
-	go func() {
-		if err := pool.ListenAndUse("localhost:8080"); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-pool.Listening
-
-	p, err := NewProvider("ws://localhost:8080/")
-	if err != nil {
-		t.Error(err)
-	}
-	if p == nil {
-		t.Error("Unable to instantiate the provider")
-	}
-
-	connectAndClose(t, pool, p)
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPool(), nil
+		},
+		func(pool *PoolServer) error {
+			return pool.ListenAndUse("localhost:8080")
+		},
+		func() (*Provider, error) {
+			return NewProvider("ws://localhost:8080/")
+		},
+		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+			pc, connected := tryConnect(p, 1)
+			if !connected {
+				t.Error("Not connected")
+			}
+			return pc, nil
+		})
 }
 
 /* TestConnectionTLS tests for a successful provider to pool server connection
 over an encrypted channel. */
 func TestConnectionTLS(t *testing.T) {
-	pool, err := NewPoolTLS("testfiles/server.crt", "testfiles/server.key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pool == nil {
-		t.Fatal("Unable to instantiate a TLS pool")
-	}
-	pool.Bind("/")
-
-	go func() {
-		if err := pool.ListenAndUseTLS("localhost:8443"); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-pool.Listening
-
-	p, err := NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
-	if err != nil {
-		t.Error(err)
-	}
-	if p == nil {
-		t.Error("Unable to instantiate the provider")
-	}
-
-	connectAndClose(t, pool, p)
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPoolTLS("testfiles/server.crt", "testfiles/server.key")
+		},
+		func(pool *PoolServer) error {
+			return pool.ListenAndUseTLS("localhost:8443")
+		},
+		func() (*Provider, error) {
+			return NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
+		},
+		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+			pc, connected := tryConnect(p, 1)
+			if !connected {
+				t.Error("Not connected")
+			}
+			return pc, nil
+		})
 }
 
 /* TestConnectionTLSAuth tests for a successful provider to pool server connection
 over an encrypted channel with client-side certificate authentication. */
 func TestConnectionTLSAuth(t *testing.T) {
-	pool, err := NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pool == nil {
-		t.Fatal("Unable to instantiate a TLS+auth pool")
-	}
-	pool.Bind("/")
-
-	go func() {
-		if err := pool.ListenAndUseTLS("localhost:8443"); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-pool.Listening
-
-	p, err := NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
-	if err != nil {
-		t.Error(err)
-	}
-	if p == nil {
-		t.Error("Unable to instantiate the provider")
-	}
-
-	connectAndClose(t, pool, p)
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
+		},
+		func(pool *PoolServer) error {
+			return pool.ListenAndUseTLS("localhost:8443")
+		},
+		func() (*Provider, error) {
+			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+		},
+		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+			pc, connected := tryConnect(p, 1)
+			if !connected {
+				t.Error("Not connected")
+			}
+			return pc, nil
+		})
 }
 
 /* TestConnectionTLSAuthFail tests for a *unsuccessful* provider to pool server
 connection over an encrypted channel without the expected client-side certificate
 authentication. */
 func TestConnectionTLSAuthFail(t *testing.T) {
-	pool, err := NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pool == nil {
-		t.Fatal("Unable to instantiate a TLS+auth pool")
-	}
-	pool.Bind("/")
-
-	go func() {
-		if err := pool.ListenAndUseTLS("localhost:8443"); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-pool.Listening
-
-	p, err := NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
-	if err != nil {
-		t.Error(err)
-	}
-	if p == nil {
-		t.Error("Unable to instantiate the provider")
-	}
-
-	p.MaxAttempts = 1
-	pc := p.ConnectAndServe()
-
-	var connected bool
-	select {
-	case <-pc.Connected:
-		connected = true
-	case <-pc.Closed:
-	}
-
-	if connected {
-		t.Error("Unexpected connection")
-	}
-	if err := pc.Close(); err == nil {
-		t.Error("Expected connection error")
-	} else {
-		t.Log(err)
-	}
-	if err := pool.Close(); err != nil {
-		t.Error(err)
-	}	
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
+		},
+		func(pool *PoolServer) error {
+			return pool.ListenAndUseTLS("localhost:8443")
+		},
+		func() (*Provider, error) {
+			return NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
+		},
+		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+			pc, connected := tryConnect(p, 1)
+			if connected {
+				t.Error("Unexpected connection")
+			}
+			pc.Close()
+			return nil, nil
+		})
 }
