@@ -174,30 +174,50 @@ func (conn *connObserver) Write(p []byte) (n int, err error) {
 }
 
 /* handle returns the websocket.Handler that the passes calls from the
-given channel over a websocket connection. */
-func handle(callIn <-chan *rpc.Call) websocket.Handler {
+given channel over a websocket connection. In the case of I/O error
+it is written to errOut channel if it is provided and the function
+returns. The function also returns if callIn channel is closed.
+No error is sent in that case. The errOut, if provied, is anyway
+closed on return. */
+func handle(callIn <-chan *rpc.Call, errOut chan<- error) websocket.Handler {
 	return websocket.Handler(func(ws *websocket.Conn) {
 		conn := &connObserver{ws, make(chan error, 10)}
 		client := jsonrpc.NewClient(conn)
+	loop:
 		for {
 			select {
-			case c := <-callIn:
+			case c, ok := <-callIn:
+				if !ok {
+					break loop
+				}
 				invoke(client, c)
-			case <-conn.ioError:
-				break
+			case err := <-conn.ioError:
+				if errOut != nil {
+					errOut <- err
+				}
+				break loop
 			}
+		}
+		if errOut != nil {
+			close(errOut)
 		}
 		client.Close()
 	})
 }
 
-/* Bind associates the given path with the set of remote providers or
-makes it the default path if no object provider names given. */
-func (pool *PoolServer) Bind(path string, providers ...string) {
+/* assertMux checks for pool.Server.Handler mux and makes
+one if it doesn't yet exist. */
+func (pool *PoolServer) assertMux() *http.ServeMux {
 	if pool.Server.Handler == nil {
 		pool.Server.Handler = http.NewServeMux()
 	}
-	mux := pool.Server.Handler.(*http.ServeMux)
+	return pool.Server.Handler.(*http.ServeMux)
+}
+
+/* Bind associates the given path with the set of remote providers or
+makes it the default path if no object provider names given. */
+func (pool *PoolServer) Bind(path string, providers ...string) {
+	mux := pool.assertMux()
 	if pool.pathMap == nil {
 		pool.pathMap = make(map[string]chan *rpc.Call)
 	}
@@ -216,7 +236,21 @@ func (pool *PoolServer) Bind(path string, providers ...string) {
 	} else {
 		pool.DefaultPool = callIn
 	}
-	mux.Handle(path, handle(callIn))
+	mux.Handle(path, handle(callIn, nil))
+}
+
+/* handleIn returns the websocket.Handler that the serves
+incoming RPC calls over a websocket connection. */
+func handleIn() websocket.Handler {
+	return websocket.Handler(func(ws *websocket.Conn) {
+		jsonrpc.ServeConn(ws)
+	})
+}
+
+/* BindIn handles incoming RPC calls on the given path. */
+func (pool *PoolServer) BindIn(path string, providers ...string) {
+	mux := pool.assertMux()
+	mux.Handle(path, handleIn())
 }
 
 /* listen returns the active listener for the current pool config

@@ -24,13 +24,11 @@ type Provider struct {
 	MaxAttempts int
 	// The delay between reconnections. The default is DefaultReconnectDelay (100ms).
 	Delay time.Duration
-	// Pool call channel
-	Calls chan *rpc.Call
 }
 
-/* Provider connection represents a signle connection that handles RPC
-requests coming from a pool server. */
-type PoolConnection struct {
+/* PoolConn represents a signle pool connection that handles
+RPC requests coming from a pool server. */
+type PoolConn struct {
 	// Error channel
 	Error <-chan error
 	// Connected signal channel
@@ -39,6 +37,14 @@ type PoolConnection struct {
 	Closed <-chan struct{}
 	// Used to close the connection
 	stop chan struct{}
+}
+
+/* PoolCallerConn represents a signle connection that is
+used to send RPC calls *to* the pool. */
+type PoolCallerConn struct {
+	*PoolConn
+	// Call channel
+	Calls chan *rpc.Call
 }
 
 /* NewProvider returns a new Provider instance tuned to the given pool URL
@@ -50,7 +56,7 @@ func NewProvider(url string, rootCAs ...string) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	} else {
-		p := &Provider{Config: conf, Calls: make(chan *rpc.Call)}
+		p := &Provider{Config: conf}
 		if err := p.AppendRootCAs(rootCAs...); err != nil {
 			return nil, err
 		}
@@ -102,16 +108,33 @@ func (p *Provider) AppendRootCAs(rootCAs ...string) error {
 }
 
 /*
-Connect connects to the configured server pool URL and
-asynchronously handles incoming JSON-RPC messages.
+ConnectAndServe connects to the configured server pool URL
+and asynchronously handles incoming JSON-RPC messages.
 The connection is automatically re-established when broken
 until MaxAttempts is exceeded.
 Don't forget to call rpc.Register() with your exported objects.
 */
-func (p *Provider) ConnectAndServe() *PoolConnection {
+func (p *Provider) ConnectAndServe() *PoolConn {
+	return p.connect(nil)
+}
+
+/*
+ConnectAndUse connects to the configured server pool URL
+to send RPC calls *to* the pool with JSON-RPC messages.
+The connection is automatically re-established when broken
+until MaxAttempts is exceeded. See PoolServer.BindIn()
+method for more information.
+*/
+func (p *Provider) ConnectAndUse() *PoolCallerConn {
+	calls := make(chan *rpc.Call)
+	pc := p.connect(calls)
+	return &PoolCallerConn{pc, calls}
+}
+
+func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 	var (
 		ws       *websocket.Conn
-		pc       PoolConnection
+		pc       PoolConn
 		err      error
 		attempts int
 	)
@@ -143,28 +166,24 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 				default:
 				}
 
-				done := make(chan struct{})
-				go func() {
-					var cl *rpc.Client
-				wait:
-					for {
+				if callIn != nil {
+					errOut := make(chan error)
+					handle(callIn, errOut)(ws)
+					if err := <- errOut; err == nil {
+						break loop // callIn is closed
+					}
+				} else {
+					done := make(chan struct{})
+					go func() {
 						select {
 						case <-done:
-							break wait
 						case <-pc.stop:
-							break wait
-						case c := <-p.Calls:
-							if cl == nil {
-								cl = jsonrpc.NewClient(ws)
-							}
-							cl.Go(c.ServiceMethod, c.Args, c.Reply, c.Done)
 						}
-					}
-					ws.Close()
-				}()
-
-				jsonrpc.ServeConn(ws)
-				close(done)
+						ws.Close()
+					}()
+					jsonrpc.ServeConn(ws)
+					close(done)
+				}
 			}
 
 			if attempts < p.MaxAttempts || p.MaxAttempts == 0 {
@@ -190,8 +209,8 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 
 /* ConnectAndServeMulti asynchronously runs the given number of
 simultaneous connections using ConnectAndServe(). */
-func (p *Provider) ConnectAndServeMulti(count int) []*PoolConnection {
-	cons := make([]*PoolConnection, count, count)
+func (p *Provider) ConnectAndServeMulti(count int) []*PoolConn {
+	cons := make([]*PoolConn, count, count)
 	for n := 0; n < count; n++ {
 		cons = append(cons, p.ConnectAndServe())
 	}
@@ -200,7 +219,7 @@ func (p *Provider) ConnectAndServeMulti(count int) []*PoolConnection {
 
 /* Close closes the connection and returns the last unread error
 from pc.Error. */
-func (pc *PoolConnection) Close() error {
+func (pc *PoolConn) Close() error {
 	close(pc.stop)
 	return <-pc.Error
 }
@@ -209,7 +228,7 @@ func (pc *PoolConnection) Close() error {
 The name of the function should be "Service.Method" same, as in the package
 net/rpc. If "done" is nil, a new channel is allocated and passed in the return
 value. See net/rpc package for details. */
-func (p *Provider) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
+func (pcc *PoolCallerConn) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
 	call := &rpc.Call{
 		ServiceMethod: serviceMethod,
 		Args:          args,
@@ -220,17 +239,24 @@ func (p *Provider) Go(serviceMethod string, args interface{}, reply interface{},
 	}
 	call.Done = done
 
-	p.Calls <- call
+	pcc.Calls <- call
 	return call, nil
 }
 
 /* Call invokes the given remote function *on the pool server* and waits for it to
 complete, returning its error status. */
-func (p *Provider) Call(serviceMethod string, args interface{}, reply interface{}) error {
-	if call, err := p.Go(serviceMethod, args, reply, nil); err == nil {
+func (pcc *PoolCallerConn) Call(serviceMethod string, args interface{}, reply interface{}) error {
+	if call, err := pcc.Go(serviceMethod, args, reply, nil); err == nil {
 		call = <-call.Done
 		return call.Error
 	} else {
 		return err
 	}
+}
+
+/* Close closes the caller connection and returns the last unread
+error from pcc.Error. */
+func (pcc *PoolCallerConn) Close() error {
+	close(pcc.Calls)
+	return pcc.PoolConn.Close()
 }

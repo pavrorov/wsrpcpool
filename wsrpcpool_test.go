@@ -7,6 +7,7 @@ import (
 	"testing"
 	"net/rpc"
 	"errors"
+	"io"
 )
 
 /* TestNewPool tests the NewPool works as expected. */
@@ -91,8 +92,8 @@ func TestBindName(t *testing.T) {
 	}
 }
 
-/* closeConnection closes the given pool and provider connections. */
-func closeConnection(t *testing.T, pool *PoolServer, pc *PoolConnection) {
+/* closeConn closes the given pool and provider connections. */
+func closeConn(t *testing.T, pool, pc io.Closer) {
 	if pc != nil {
 		if err := pc.Close(); err != nil {
 			t.Error(err)
@@ -105,25 +106,40 @@ func closeConnection(t *testing.T, pool *PoolServer, pc *PoolConnection) {
 	}
 }
 
-/* tryConnect tries to connect the given provider making a given number of
-attempts at most. Returns the new connection and the connected flag. */
-func tryConnect(p *Provider, maxattempts int) (*PoolConnection, bool) {
-	p.MaxAttempts = maxattempts
-	pc := p.ConnectAndServe()
-
+/* waitConnected waits for the given connection to either connect
+or be closed. Returns the connected flag value. */
+func waitConnected(pc *PoolConn) bool {
 	var connected bool
 	select {
 	case <-pc.Connected:
 		connected = true
 	case <-pc.Closed:
 	}
+	return connected
+}
 
+/* tryConnect tries to connect the given provider making a given number of
+attempts at most. Returns the new connection and the connected flag. */
+func tryConnect(p *Provider, maxattempts int) (*PoolConn, bool) {
+	p.MaxAttempts = maxattempts
+	pc := p.ConnectAndServe()
+	connected := waitConnected(pc)
+	return pc, connected
+}
+
+/* tryConnectCaller tries to connect the given provider as a caller
+making a given number of attempts at most. Returns the new caller connection
+and the connected flag. */
+func tryConnectCaller(p *Provider, maxattempts int) (*PoolCallerConn, bool) {
+	p.MaxAttempts = maxattempts
+	pc := p.ConnectAndUse()
+	connected := waitConnected(pc.PoolConn)
 	return pc, connected
 }
 
 /* testConnection tests for a successful provider to pool server connection
 using the given callback functions. */
-func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen func(pool *PoolServer) error, getprovider func() (*Provider, error), connect func(p *Provider, pool *PoolServer) (*PoolConnection, error)) {
+func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen func(pool *PoolServer) error, getprovider func() (*Provider, error), connect func(p *Provider, pool *PoolServer) (io.Closer, error)) {
 	pool, err := getpool()
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +168,7 @@ func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen fu
 		t.Error(err)
 	}
 
-	closeConnection(t, pool, pc)
+	closeConn(t, pool, pc)
 }
 
 /* TestConnection tests for a successful provider to pool server connection
@@ -169,7 +185,7 @@ func TestConnection(t *testing.T) {
 		func() (*Provider, error) {
 			return NewProvider("ws://localhost:8080/")
 		},
-		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 			if !connected {
 				t.Error("Not connected")
@@ -192,7 +208,7 @@ func TestConnectionTLS(t *testing.T) {
 		func() (*Provider, error) {
 			return NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
 		},
-		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 			if !connected {
 				t.Error("Not connected")
@@ -215,7 +231,7 @@ func TestConnectionTLSFail(t *testing.T) {
 		func() (*Provider, error) {
 			return NewProvider("wss://localhost:8443/")
 		},
-		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 			if connected {
 				t.Error("Unexpected connection")
@@ -239,7 +255,7 @@ func TestConnectionTLSAuth(t *testing.T) {
 		func() (*Provider, error) {
 			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
 		},
-		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 			if !connected {
 				t.Error("Not connected")
@@ -263,7 +279,7 @@ func TestConnectionTLSAuthFail(t *testing.T) {
 		func() (*Provider, error) {
 			return NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
 		},
-		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 			if connected {
 				t.Error("Unexpected connection")
@@ -335,7 +351,7 @@ func TestCallTLSAuth(t *testing.T) {
 		func() (*Provider, error) {
 			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
 		},
-		func(p *Provider, pool *PoolServer) (*PoolConnection, error) {
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 
 			if !connected {
@@ -343,7 +359,31 @@ func TestCallTLSAuth(t *testing.T) {
 			} else {
 				testCalls(t, pool)
 			}
-			
+			return pc, nil
+		})
+}
+
+/* TestInCallTLSAuth tests for a successful incoming method call over
+an encrypted channel with client-side certificate authentication. */
+func TestInCallTLSAuth(t *testing.T) {
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
+		},
+		func(pool *PoolServer) error {
+			pool.BindIn("/")
+			return pool.ListenAndUseTLS("localhost:8443")
+		},
+		func() (*Provider, error) {
+			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+		},
+		func(p *Provider, pool *PoolServer) (io.Closer, error) {
+			pc, connected := tryConnectCaller(p, 1)
+			if !connected {
+				t.Error("Not connected")
+			} else {
+				testCalls(t, pc)
+			}
 			return pc, nil
 		})
 }
