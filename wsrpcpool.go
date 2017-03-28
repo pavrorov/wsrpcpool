@@ -286,7 +286,7 @@ func (pool *PoolServer) Close() error {
 
 /* Go invokes the given remote function asynchronously. The name of the
 provider is first searched in the PoolMap and the DefaultPool is used
-if it isn't there. If done is nil, a new channel is allocated and
+if it isn't there. If "done" is nil, a new channel is allocated and
 passed in the return value. See net/rpc package for details. */
 func (pool *PoolServer) Go(provider, funcName string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
 	callIn := pool.PoolMap[provider]

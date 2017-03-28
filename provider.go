@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"golang.org/x/net/websocket"
+	"net/rpc"
 	"net/rpc/jsonrpc"
 	"time"
 )
@@ -23,6 +24,8 @@ type Provider struct {
 	MaxAttempts int
 	// The delay between reconnections. The default is DefaultReconnectDelay (100ms).
 	Delay time.Duration
+	// Pool call channel
+	Calls chan *rpc.Call
 }
 
 /* Provider connection represents a signle connection that handles RPC
@@ -47,7 +50,7 @@ func NewProvider(url string, rootCAs ...string) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	} else {
-		p := &Provider{Config: conf}
+		p := &Provider{Config: conf, Calls: make(chan *rpc.Call)}
 		if err := p.AppendRootCAs(rootCAs...); err != nil {
 			return nil, err
 		}
@@ -135,14 +138,27 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 			attempts++
 
 			if err == nil {
-				connected <- struct{}{}
-				close(connected)
-				
-				done := make(chan struct{})				
+				select {
+				case connected <- struct{}{}:
+				default:
+				}
+
+				done := make(chan struct{})
 				go func() {
-					select {
-					case <-done:
-					case <-pc.stop:
+					var cl *rpc.Client
+				wait:
+					for {
+						select {
+						case <-done:
+							break wait
+						case <-pc.stop:
+							break wait
+						case c := <-p.Calls:
+							if cl == nil {
+								cl = jsonrpc.NewClient(ws)
+							}
+							cl.Go(c.ServiceMethod, c.Args, c.Reply, c.Done)
+						}
 					}
 					ws.Close()
 				}()
@@ -174,10 +190,12 @@ func (p *Provider) ConnectAndServe() *PoolConnection {
 
 /* ConnectAndServeMulti asynchronously runs the given number of
 simultaneous connections using ConnectAndServe(). */
-func (p *Provider) ConnectAndServeMulti(count int) {
+func (p *Provider) ConnectAndServeMulti(count int) []*PoolConnection {
+	cons := make([]*PoolConnection, count, count)
 	for n := 0; n < count; n++ {
-		go p.ConnectAndServe()
+		cons = append(cons, p.ConnectAndServe())
 	}
+	return cons
 }
 
 /* Close closes the connection and returns the last unread error
@@ -185,4 +203,34 @@ from pc.Error. */
 func (pc *PoolConnection) Close() error {
 	close(pc.stop)
 	return <-pc.Error
+}
+
+/* Go invokes the given remote function *on the pool server* asynchronously.
+The name of the function should be "Service.Method" same, as in the package
+net/rpc. If "done" is nil, a new channel is allocated and passed in the return
+value. See net/rpc package for details. */
+func (p *Provider) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
+	call := &rpc.Call{
+		ServiceMethod: serviceMethod,
+		Args:          args,
+		Reply:         reply,
+	}
+	if done == nil {
+		done = make(chan *rpc.Call, 1)
+	}
+	call.Done = done
+
+	p.Calls <- call
+	return call, nil
+}
+
+/* Call invokes the given remote function *on the pool server* and waits for it to
+complete, returning its error status. */
+func (p *Provider) Call(serviceMethod string, args interface{}, reply interface{}) error {
+	if call, err := p.Go(serviceMethod, args, reply, nil); err == nil {
+		call = <-call.Done
+		return call.Error
+	} else {
+		return err
+	}
 }
