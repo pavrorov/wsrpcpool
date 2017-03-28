@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"net/rpc/jsonrpc"
+	"strings"
 )
 
 /* PoolServer is used to listen on a set of web-socket URLs for RPC
@@ -285,11 +286,15 @@ func (pool *PoolServer) Close() error {
 }
 
 /* Go invokes the given remote function asynchronously. The name of the
-provider is first searched in the PoolMap and the DefaultPool is used
-if it isn't there. If "done" is nil, a new channel is allocated and
-passed in the return value. See net/rpc package for details. */
-func (pool *PoolServer) Go(provider, funcName string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
-	callIn := pool.PoolMap[provider]
+provider (if given as the first part of serviceMethod, i.e. "Provider.Function")
+is first searched in the PoolMap and the DefaultPool is used if it isn't there
+(or isn't specified). If "done" is nil, a new channel is allocated and passed in
+the return value. See net/rpc package for details. */
+func (pool *PoolServer) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
+	var callIn chan *rpc.Call
+	if split := strings.SplitN(serviceMethod, ".", 2); len(split) > 1 {
+		callIn = pool.PoolMap[split[0]]
+	}
 	if callIn == nil {
 		callIn = pool.DefaultPool
 	}
@@ -298,7 +303,7 @@ func (pool *PoolServer) Go(provider, funcName string, args interface{}, reply in
 	}
 
 	call := &rpc.Call{
-		ServiceMethod: provider + "." + funcName,
+		ServiceMethod: serviceMethod,
 		Args:          args,
 		Reply:         reply,
 	}
@@ -313,8 +318,8 @@ func (pool *PoolServer) Go(provider, funcName string, args interface{}, reply in
 
 /* Call invokes the given remote function and waits for it to complete,
 returning its error status. */
-func (pool *PoolServer) Call(provider, funcName string, args interface{}, reply interface{}) error {
-	if call, err := pool.Go(provider, funcName, args, reply, nil); err == nil {
+func (pool *PoolServer) Call(serviceMethod string, args interface{}, reply interface{}) error {
+	if call, err := pool.Go(serviceMethod, args, reply, nil); err == nil {
 		call = <-call.Done
 		return call.Error
 	} else {

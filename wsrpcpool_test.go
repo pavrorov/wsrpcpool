@@ -292,13 +292,19 @@ func (t *Test) TestError(text string, reply *string) error {
 	return errors.New(text)
 }
 
+/* rpcClient provides Go and Call methods. */
+type rpcClient interface {
+	Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error)
+	Call(serviceMethod string, args interface{}, reply interface{}) error
+}
+
 /* testCalls perform the series of remote calls using the Test type. */
-func testCalls(t *testing.T, p *Provider, pool *PoolServer) {
+func testCalls(t *testing.T, client rpcClient) {
 	rpc.Register(&Test{})
 
 	var testval int = 1
 	var reply int
-	if err := pool.Call("Test", "TestFunc", testval, &reply); err != nil {
+	if err := client.Call("Test.TestFunc", testval, &reply); err != nil {
 		t.Error(err)
 	}
 	if reply != testval {
@@ -306,7 +312,7 @@ func testCalls(t *testing.T, p *Provider, pool *PoolServer) {
 	}
 
 	var errtext = "Error text"
-	if err := pool.Call("Test", "TestError", errtext, nil); err == nil {
+	if err := client.Call("Test.TestError", errtext, nil); err == nil {
 		t.Error("Expected error")
 	} else {
 		if err.Error() != errtext {
@@ -335,7 +341,7 @@ func TestCallTLSAuth(t *testing.T) {
 			if !connected {
 				t.Error("Not connected")
 			} else {
-				testCalls(t, p, pool)
+				testCalls(t, pool)
 			}
 			
 			return pc, nil
