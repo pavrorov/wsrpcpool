@@ -422,14 +422,14 @@ func TestConnectionTLSAuthMulti(t *testing.T) {
 			pcs := make(chan io.Closer, len(ps) * ConnsPerProvider)
 			for _, p := range ps {
 				for i := 0; i < ConnsPerProvider; i++ {
+					wg.Add(1)
 					go func() {
-						wg.Add(1)
+						defer wg.Done()
 						pc, connected := tryConnect(p, 1)
 						if !connected {
 							t.Error("Not connected")
 						}
 						pcs <- pc
-						wg.Done()
 					}()
 				}
 			}
@@ -438,7 +438,7 @@ func TestConnectionTLSAuthMulti(t *testing.T) {
 
 			return func() []io.Closer {
 				cls := make([]io.Closer, 0, len(ps) * ConnsPerProvider)
-				for pc := range(pcs) {
+				for pc := range pcs {
 					cls = append(cls, pc)
 				}
 				return cls
