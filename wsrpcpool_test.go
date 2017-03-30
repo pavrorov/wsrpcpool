@@ -7,8 +7,8 @@ import (
 	"errors"
 	"io"
 	"net/rpc"
-	"testing"
 	"sync"
+	"testing"
 )
 
 /* TestNewPool tests the NewPool works as expected. */
@@ -101,7 +101,7 @@ func closeConns(t *testing.T, pool io.Closer, closers ...io.Closer) {
 				t.Error(err)
 			}
 		}
-	}	
+	}
 	if pool != nil {
 		if err := pool.Close(); err != nil {
 			t.Error(err)
@@ -394,21 +394,14 @@ func TestInCallTLSAuth(t *testing.T) {
 		})
 }
 
-var (
-	/* A number of providers */
-	ProviderCount int = 5
-	/* A number of connection per provider */
-	ConnsPerProvider int = 5
-)
-
-/* TestConnectionTLSAuthMulti tests for a successful connection between the pool
-server and the set of providers over an encrypted channel with client-side certificate
-authentication. */
-func TestConnectionTLSAuthMulti(t *testing.T) {
+/* testTLSAuthMulti runs given tests on the pool server and a set of
+providers with multiple connections established over an encrypted
+channel with client-side certificate authentication. */
+func testTLSAuthMulti(t *testing.T, providerCount, connsPerProvider int, connect func(p *Provider) (io.Closer, error), poolTest func(pool *PoolServer) error) {
 	testConnectionTLSAuth(t, nil,
 		func() ([]*Provider, error) {
-			ps := make([]*Provider, 0, ProviderCount)
-			for i := 0; i < ProviderCount; i++ {
+			ps := make([]*Provider, 0, providerCount)
+			for i := 0; i < providerCount; i++ {
 				if p, err := newTLSAuthProvider(); err == nil {
 					ps = append(ps, p)
 				} else {
@@ -419,15 +412,15 @@ func TestConnectionTLSAuthMulti(t *testing.T) {
 		},
 		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
 			wg := sync.WaitGroup{}
-			pcs := make(chan io.Closer, len(ps) * ConnsPerProvider)
+			pcs := make(chan io.Closer, len(ps)*connsPerProvider)
 			for _, p := range ps {
-				for i := 0; i < ConnsPerProvider; i++ {
+				for i := 0; i < connsPerProvider; i++ {
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
-						pc, connected := tryConnect(p, 1)
-						if !connected {
-							t.Error("Not connected")
+						pc, err := connect(p)
+						if err != nil {
+							t.Error(err)
 						}
 						pcs <- pc
 					}()
@@ -436,12 +429,32 @@ func TestConnectionTLSAuthMulti(t *testing.T) {
 			wg.Wait()
 			close(pcs)
 
+			if poolTest != nil {
+				if err := poolTest(pool); err != nil {
+					t.Error(err)
+				}
+			}
+
 			return func() []io.Closer {
-				cls := make([]io.Closer, 0, len(ps) * ConnsPerProvider)
+				cls := make([]io.Closer, 0, len(ps)*connsPerProvider)
 				for pc := range pcs {
 					cls = append(cls, pc)
 				}
 				return cls
 			}(), nil
 		})
+}
+
+/* TestConnectionTLSAuthMulti tests for a successful connection between the pool
+server and the set of providers over an encrypted channel with client-side
+certificate authentication. */
+func TestConnectionTLSAuthMulti(t *testing.T) {
+	testTLSAuthMulti(t, 5, 5,
+		func(p *Provider) (io.Closer, error) {
+			pc, connected := tryConnect(p, 1)
+			if !connected {
+				t.Error("Not connected")
+			}
+			return pc, nil
+		}, nil)
 }
