@@ -407,7 +407,7 @@ authentication. */
 func TestConnectionTLSAuthMulti(t *testing.T) {
 	testConnectionTLSAuth(t, nil,
 		func() ([]*Provider, error) {
-			ps := make([]*Provider, ProviderCount)
+			ps := make([]*Provider, 0, ProviderCount)
 			for i := 0; i < ProviderCount; i++ {
 				if p, err := newTLSAuthProvider(); err == nil {
 					ps = append(ps, p)
@@ -437,7 +437,7 @@ func TestConnectionTLSAuthMulti(t *testing.T) {
 			close(pcs)
 
 			return func() []io.Closer {
-				cls := make([]io.Closer, len(ps) * ConnsPerProvider)
+				cls := make([]io.Closer, 0, len(ps) * ConnsPerProvider)
 				for pc := range(pcs) {
 					cls = append(cls, pc)
 				}
