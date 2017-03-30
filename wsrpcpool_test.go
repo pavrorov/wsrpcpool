@@ -4,10 +4,10 @@ package wsrpcpool
 // Main testing module
 
 import (
-	"testing"
-	"net/rpc"
 	"errors"
 	"io"
+	"net/rpc"
+	"testing"
 )
 
 /* TestNewPool tests the NewPool works as expected. */
@@ -241,20 +241,36 @@ func TestConnectionTLSFail(t *testing.T) {
 		})
 }
 
-/* TestConnectionTLSAuth tests for a successful provider to pool server connection
-over an encrypted channel with client-side certificate authentication. */
-func TestConnectionTLSAuth(t *testing.T) {
+/* testConnectionTLSAuth tests for a successful provider to pool server connection
+over an encrypted channel with client-side certificate authentication
+using the provided test function and optional hooks. */
+func testConnectionTLSAuth(t *testing.T, setupPool func(pool *PoolServer), getprovider func() (*Provider, error), connect func(p *Provider, pool *PoolServer) (io.Closer, error)) {
 	testConnection(t,
 		func() (*PoolServer, error) {
 			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
 		},
 		func(pool *PoolServer) error {
-			pool.Bind("/")
+			if setupPool != nil {
+				setupPool(pool)
+			} else {
+				pool.Bind("/")
+			}
 			return pool.ListenAndUseTLS("localhost:8443")
 		},
 		func() (*Provider, error) {
-			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+			if getprovider != nil {
+				return getprovider()
+			} else {
+				return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+			}
 		},
+		connect)
+}
+
+/* TestConnectionTLSAuth tests for a successful provider to pool server connection
+over an encrypted channel with client-side certificate authentication. */
+func TestConnectionTLSAuth(t *testing.T) {
+	testConnectionTLSAuth(t, nil, nil,
 		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
 			if !connected {
@@ -268,14 +284,7 @@ func TestConnectionTLSAuth(t *testing.T) {
 connection over an encrypted channel without the expected client-side certificate
 authentication. */
 func TestConnectionTLSAuthFail(t *testing.T) {
-	testConnection(t,
-		func() (*PoolServer, error) {
-			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
-		},
-		func(pool *PoolServer) error {
-			pool.Bind("/")
-			return pool.ListenAndUseTLS("localhost:8443")
-		},
+	testConnectionTLSAuth(t, nil,
 		func() (*Provider, error) {
 			return NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
 		},
@@ -340,20 +349,9 @@ func testCalls(t *testing.T, client rpcClient) {
 /* TestCallTLSAuth tests for a successful method call over
 an encrypted channel with client-side certificate authentication. */
 func TestCallTLSAuth(t *testing.T) {
-	testConnection(t,
-		func() (*PoolServer, error) {
-			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
-		},
-		func(pool *PoolServer) error {
-			pool.Bind("/")
-			return pool.ListenAndUseTLS("localhost:8443")
-		},
-		func() (*Provider, error) {
-			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
-		},
+	testConnectionTLSAuth(t, nil, nil,
 		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnect(p, 1)
-
 			if !connected {
 				t.Error("Not connected")
 			} else {
@@ -366,17 +364,11 @@ func TestCallTLSAuth(t *testing.T) {
 /* TestInCallTLSAuth tests for a successful incoming method call over
 an encrypted channel with client-side certificate authentication. */
 func TestInCallTLSAuth(t *testing.T) {
-	testConnection(t,
-		func() (*PoolServer, error) {
-			return NewPoolTLSAuth("testfiles/server.crt", "testfiles/server.key", "testfiles/rootCA.crt")
-		},
-		func(pool *PoolServer) error {
+	testConnectionTLSAuth(t,
+		func(pool *PoolServer) {
 			pool.BindIn("/")
-			return pool.ListenAndUseTLS("localhost:8443")
 		},
-		func() (*Provider, error) {
-			return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
-		},
+		nil,
 		func(p *Provider, pool *PoolServer) (io.Closer, error) {
 			pc, connected := tryConnectCaller(p, 1)
 			if !connected {
