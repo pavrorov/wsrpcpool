@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/rpc"
 	"testing"
+	"sync"
 )
 
 /* TestNewPool tests the NewPool works as expected. */
@@ -246,6 +247,12 @@ func TestConnectionTLSFail(t *testing.T) {
 		})
 }
 
+/* newTLSAuthProvider return a new provider with root and client
+certificates configured. */
+func newTLSAuthProvider() (*Provider, error) {
+	return NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+}
+
 /* testConnectionTLSAuth tests for a successful provider to pool server connection
 over an encrypted channel with client-side certificate authentication
 using the provided test function and optional hooks. */
@@ -266,7 +273,7 @@ func testConnectionTLSAuth(t *testing.T, setupPool func(pool *PoolServer), getpr
 			if getproviders != nil {
 				return getproviders()
 			} else {
-				p, err := NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+				p, err := newTLSAuthProvider()
 				return []*Provider{p}, err
 			}
 		},
@@ -384,5 +391,57 @@ func TestInCallTLSAuth(t *testing.T) {
 				testCalls(t, pc)
 			}
 			return []io.Closer{pc}, nil
+		})
+}
+
+var (
+	/* A number of providers */
+	ProviderCount int = 5
+	/* A number of connection per provider */
+	ConnsPerProvider int = 5
+)
+
+/* TestConnectionTLSAuthMulti tests for a successful connection between the pool
+server and the set of providers over an encrypted channel with client-side certificate
+authentication. */
+func TestConnectionTLSAuthMulti(t *testing.T) {
+	testConnectionTLSAuth(t, nil,
+		func() ([]*Provider, error) {
+			ps := make([]*Provider, ProviderCount)
+			for i := 0; i < ProviderCount; i++ {
+				if p, err := newTLSAuthProvider(); err == nil {
+					ps = append(ps, p)
+				} else {
+					return nil, err
+				}
+			}
+			return ps, nil
+		},
+		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
+			wg := sync.WaitGroup{}
+			pcs := make(chan io.Closer, len(ps) * ConnsPerProvider)
+			for _, p := range ps {
+				for i := 0; i < ConnsPerProvider; i++ {
+					go func() {
+						wg.Add(1)
+						pc, connected := tryConnect(p, 1)
+						if !connected {
+							t.Error("Not connected")
+						}
+						pcs <- pc
+						wg.Done()
+					}()
+				}
+			}
+			wg.Wait()
+			close(pcs)
+
+			return func() []io.Closer {
+				cls := make([]io.Closer, len(ps) * ConnsPerProvider)
+				for pc := range(pcs) {
+					cls = append(cls, pc)
+				}
+				return cls
+			}(), nil
 		})
 }
