@@ -31,8 +31,10 @@ RPC requests coming from a pool server. */
 type PoolConn struct {
 	// Error channel
 	Error <-chan error
-	// Connected signal channel
+	// "Connected" signal channel
 	Connected <-chan struct{}
+	// "Disconnected" signal channel
+	Disconnected <-chan struct{}
 	// Closed signal channel
 	Closed <-chan struct{}
 	// Used to close the connection
@@ -146,6 +148,8 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 	pc.Error = errc
 	connected := make(chan struct{}, 1)
 	pc.Connected = connected
+	disconnected := make(chan struct{}, 1)
+	pc.Disconnected = disconnected
 
 	if p.MaxAttempts < 0 {
 		close(pc.stop)
@@ -160,17 +164,17 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 			ws, err = websocket.DialConfig(p.Config)
 			attempts++
 
+			var _break bool
 			if err == nil {
 				select {
 				case connected <- struct{}{}:
 				default:
 				}
-
 				if callIn != nil {
 					errOut := make(chan error)
 					handle(callIn, errOut)(ws)
 					if err := <- errOut; err == nil {
-						break loop // callIn is closed
+						_break = true // callIn is closed
 					}
 				} else {
 					done := make(chan struct{})
@@ -178,12 +182,21 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 						select {
 						case <-done:
 						case <-pc.stop:
+							ws.Close()
 						}
-						ws.Close()
 					}()
 					jsonrpc.ServeConn(ws)
 					close(done)
 				}
+			}
+
+			select {
+			case disconnected <- struct{}{}:
+			default:
+			}
+
+			if _break {
+				break loop
 			}
 
 			if attempts < p.MaxAttempts || p.MaxAttempts == 0 {
