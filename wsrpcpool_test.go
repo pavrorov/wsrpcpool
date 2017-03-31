@@ -397,7 +397,7 @@ func TestInCallTLSAuth(t *testing.T) {
 /* testTLSAuthMulti runs given tests on the pool server and a set of
 providers with multiple connections established over an encrypted
 channel with client-side certificate authentication. */
-func testTLSAuthMulti(t *testing.T, providerCount, connsPerProvider int, connect func(p *Provider) (io.Closer, error), poolTest func(pool *PoolServer) error) {
+func testTLSAuthMulti(t *testing.T, providerCount, connsPerProvider int, connect func(p *Provider) (io.Closer, error), poolTest func(pool *PoolServer, cls []io.Closer) error) {
 	testConnectionTLSAuth(t, nil,
 		func() ([]*Provider, error) {
 			ps := make([]*Provider, 0, providerCount)
@@ -429,19 +429,16 @@ func testTLSAuthMulti(t *testing.T, providerCount, connsPerProvider int, connect
 			wg.Wait()
 			close(pcs)
 
-			if poolTest != nil {
-				if err := poolTest(pool); err != nil {
-					t.Error(err)
-				}
+			cls := make([]io.Closer, 0, len(ps)*connsPerProvider)
+			for pc := range pcs {
+				cls = append(cls, pc)
 			}
 
-			return func() []io.Closer {
-				cls := make([]io.Closer, 0, len(ps)*connsPerProvider)
-				for pc := range pcs {
-					cls = append(cls, pc)
-				}
-				return cls
-			}(), nil
+			var err error
+			if poolTest != nil {
+				err = poolTest(pool, cls)
+			}
+			return cls, err
 		})
 }
 
@@ -457,4 +454,28 @@ func TestConnectionTLSAuthMulti(t *testing.T) {
 			}
 			return pc, nil
 		}, nil)
+}
+
+/* TestCallTLSAuthMulti tests for a successful calls on a series of connections
+between the pool server and the set of providers over an encrypted channel
+with client-side certificate authentication. */
+func TestCallTLSAuthMulti(t *testing.T) {
+	testTLSAuthMulti(t, 5, 5,
+		func(p *Provider) (io.Closer, error) {
+			pc, connected := tryConnect(p, 1)
+			if !connected {
+				t.Error("Not connected")
+			}
+			return pc, nil
+		},
+		func(pool *PoolServer, cls []io.Closer) error {
+			for i := range cls {
+				testCalls(t, pool)
+				if err := cls[i].Close(); err != nil {
+					t.Error(err)
+				}
+				cls[i] = nil
+			}
+			return nil
+		})
 }
