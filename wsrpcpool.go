@@ -28,10 +28,6 @@ type PoolServer struct {
 	Listening <-chan struct{}
 	// Used to signal the pool is listening for incoming connections (pool side)
 	listening chan struct{}
-	// Used to signal the pool to stop
-	stop chan struct{}
-	// Used to return the error on close
-	errc chan error
 	// Path to call channel map
 	pathMap map[string]chan *rpc.Call
 }
@@ -49,8 +45,6 @@ func NewPool() *PoolServer {
 	return &PoolServer{
 		Listening: listening,
 		listening: listening,
-		stop:      make(chan struct{}),
-		errc:      make(chan error, 1),
 	}
 }
 
@@ -256,57 +250,44 @@ func (pool *PoolServer) BindIn(path string, providers ...string) {
 /* listen returns the active listener for the current pool config
 and an error if any. It also send a signal over the "listening"
 channel. */
-func (pool *PoolServer) listen() (net.Listener, error) {
-	l, err := net.Listen("tcp", pool.Server.Addr)
+func (pool *PoolServer) listen(addr string) (net.Listener, error) {
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	pool.listening <- struct{}{}
-	close(pool.listening)
+	select {
+	case pool.listening <- struct{}{}:
+	default:
+	}
 	return l, nil
 }
 
 /* use uses the given listener waiting for a signal on
 the "stop" channel. */
 func (pool *PoolServer) use(l net.Listener) error {
-	go func() {
-		err := pool.Server.Serve(l)
-		select {
-		case <-pool.stop: // FIXME: Check error code
-		default:
-			pool.errc <- err
-		}
-		close(pool.errc)
-	}()
-
-	select {
-	case err := <-pool.errc:
-		return err
-	case <-pool.stop:
-		return l.Close()
-	}
+	return pool.Server.Serve(l)
 }
 
 /* ListenAndUse listens the given (or configured if "" is given) address
 ([host]:port) with no SSL encryption. */
 func (pool *PoolServer) ListenAndUse(addr string) error {
-	if addr != "" {
-		pool.Server.Addr = addr
+	if addr == "" {
+		addr = pool.Server.Addr
 	}
-	l, err := pool.listen()
+	l, err := pool.listen(addr)
 	if err != nil {
 		return err
 	}
 	return pool.use(l)
 }
 
-/* ListenAndUseTLS listens the listens the given (or configured if "" is given) address
-([host]:port) with SSL encryption on. */
+/* ListenAndUseTLS listens the listens the given (or configured if ""
+is given) address ([host]:port) with SSL encryption on. */
 func (pool *PoolServer) ListenAndUseTLS(addr string) error {
-	if addr != "" {
-		pool.Server.Addr = addr
+	if addr == "" {
+		addr = pool.Server.Addr
 	}
-	l, err := pool.listen()
+	l, err := pool.listen(addr)
 	if err != nil {
 		return err
 	}
@@ -315,8 +296,7 @@ func (pool *PoolServer) ListenAndUseTLS(addr string) error {
 
 /* Close closes the pool listener. */
 func (pool *PoolServer) Close() error {
-	close(pool.stop)
-	return <-pool.errc
+	return pool.Server.Close()
 }
 
 /* Go invokes the given remote function asynchronously. The name of the

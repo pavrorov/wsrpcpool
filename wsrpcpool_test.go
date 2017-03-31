@@ -156,7 +156,11 @@ func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen fu
 			t.Error(err)
 		}
 	}()
-	<-pool.Listening
+	select {
+	case <-pool.Listening:
+	case <-pool.Closed:
+		t.Fatal(pool.Close())
+	}
 
 	ps, err := getproviders()
 	if err != nil {
@@ -477,5 +481,58 @@ func TestCallTLSAuthMulti(t *testing.T) {
 				cls[i] = nil
 			}
 			return nil
+		})
+}
+
+/* TestReconnectTLSAuth tests the ability of a authenticated encrypted connection
+to automatically re-connect if broken. */
+func TestReconnectTLSAuth(t *testing.T) {
+	testConnectionTLSAuth(t,
+		func(pool *PoolServer) {
+			pool.Bind("/")
+		},
+		nil,
+		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
+			pc, connected := tryConnect(ps[0], 1)
+			if !connected {
+				t.Error("Not connected")
+			} else {
+			loop:
+				for i := 1; i <= ps[0].MaxAttempts; i++ {
+					testCalls(t, pool)
+					if t.Failed() {
+						break loop
+					}
+					if i < ps[0].MaxAttempts {
+						if err := pool.Close(); err != nil {
+							t.Error(err)
+						}
+						select {
+						case <-pc.Disconnected:
+						case <-pc.Closed:
+							t.Errorf("Connection closed unexpectedly (%d)", i)
+							break loop
+						}
+
+						go func() {
+							if err := pool.ListenAndUseTLS("localhost:8443"); err != nil {
+								t.Error(err)
+							}
+						}()
+						select {
+						case <-pool.Listening:
+						case <-pool.Closed:
+							t.Errorf("Pool closed unexpectedly (%d)", i)
+							break loop
+						}
+
+						if connected = waitConnected(pc); !connected {
+							t.Errorf("Reconnect %d failed", i)
+							break loop
+						}
+					}
+				}
+			}
+			return []io.Closer{pc}, nil
 		})
 }
