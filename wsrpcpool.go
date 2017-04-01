@@ -8,12 +8,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"golang.org/x/net/websocket"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"strings"
+	"sync"
 )
 
 /* PoolServer is used to listen on a set of web-socket URLs for RPC
@@ -30,6 +32,10 @@ type PoolServer struct {
 	listening chan struct{}
 	// Path to call channel map
 	pathMap map[string]chan *rpc.Call
+	// Closer list used in Close()
+	cList []io.Closer
+	// Pool mutex
+	lock *sync.RWMutex
 }
 
 var (
@@ -45,6 +51,8 @@ func NewPool() *PoolServer {
 	return &PoolServer{
 		Listening: listening,
 		listening: listening,
+		cList:     make([]io.Closer, 0),
+		lock:      &sync.RWMutex{},
 	}
 }
 
@@ -167,16 +175,42 @@ func (conn *connObserver) Write(p []byte) (n int, err error) {
 	return
 }
 
-/* handle returns the websocket.Handler that the passes calls from the
+/* handle returns and invoker() function casted to the
+websocket.Handler type in order to get the necessary websocket
+handshake behavior. The invoker function is wrapped call
+to addCloser() to register the connection with the pool. */
+func (pool *PoolServer) handle(callIn <-chan *rpc.Call) websocket.Handler {
+	_invoker := invoker(callIn, nil)
+	return websocket.Handler(func(ws *websocket.Conn) {
+		pool.addCloser(ws)
+		_invoker(ws)
+	})
+}
+
+/* addCloser adds the given connection or a listener to the
+set of opened objects. */
+func (pool *PoolServer) addCloser(c io.Closer) {
+	pool.lock.Lock()
+	pool.cList = append(pool.cList, c)
+	pool.lock.Unlock()
+}
+
+/* invoker returns a function that the passes calls from the
 given channel over a websocket connection. In the case of I/O error
 it is written to errOut channel if it is provided and the function
 returns. The function also returns if callIn channel is closed.
 No error is sent in that case. The errOut, if provied, is anyway
 closed on return. */
-func handle(callIn <-chan *rpc.Call, errOut chan<- error) websocket.Handler {
-	return websocket.Handler(func(ws *websocket.Conn) {
+func invoker(callIn <-chan *rpc.Call, errOut chan<- error) func(ws *websocket.Conn) {
+	return func(ws *websocket.Conn) {
 		conn := &connObserver{ws, make(chan error, 10)}
 		client := jsonrpc.NewClient(conn)
+		defer client.Close()
+		defer func() {
+			if errOut != nil {
+				close(errOut)
+			}
+		}()
 	loop:
 		for {
 			select {
@@ -192,11 +226,7 @@ func handle(callIn <-chan *rpc.Call, errOut chan<- error) websocket.Handler {
 				break loop
 			}
 		}
-		if errOut != nil {
-			close(errOut)
-		}
-		client.Close()
-	})
+	}
 }
 
 /* assertMux checks for pool.Server.Handler mux and makes
@@ -211,6 +241,7 @@ func (pool *PoolServer) assertMux() *http.ServeMux {
 /* Bind associates the given path with the set of remote providers or
 makes it the default path if no object provider names given. */
 func (pool *PoolServer) Bind(path string, providers ...string) {
+	pool.lock.Lock()
 	mux := pool.assertMux()
 	if pool.pathMap == nil {
 		pool.pathMap = make(map[string]chan *rpc.Call)
@@ -230,42 +261,82 @@ func (pool *PoolServer) Bind(path string, providers ...string) {
 	} else {
 		pool.DefaultPool = callIn
 	}
-	mux.Handle(path, handle(callIn, nil))
+	mux.Handle(path, pool.handle(callIn))
+	pool.lock.Unlock()
 }
 
 /* handleIn returns the websocket.Handler that the serves
 incoming RPC calls over a websocket connection. */
-func handleIn() websocket.Handler {
+func (pool *PoolServer) handleIn() websocket.Handler {
 	return websocket.Handler(func(ws *websocket.Conn) {
+		pool.addCloser(ws)
 		jsonrpc.ServeConn(ws)
 	})
 }
 
 /* BindIn handles incoming RPC calls on the given path. */
 func (pool *PoolServer) BindIn(path string, providers ...string) {
+	pool.lock.Lock()
 	mux := pool.assertMux()
-	mux.Handle(path, handleIn())
+	mux.Handle(path, pool.handleIn())
+	pool.lock.Unlock()
+}
+
+/* listnObserver wraps a net.Listener providing a special
+channel to signal the server pool.Close() was called. */
+type listnObserver struct {
+	net.Listener
+	closed chan struct{}
+	wg sync.WaitGroup
+}
+
+/* Close calls Close() on the embedded Listener and aloso closes
+the "closed" channel to signal Close() was called on the pool. */
+func (lo *listnObserver) Close() error {
+	close(lo.closed)
+	err := lo.Listener.Close()
+	lo.wg.Wait()
+	return err
 }
 
 /* listen returns the active listener for the current pool config
 and an error if any. It also send a signal over the "listening"
 channel. */
-func (pool *PoolServer) listen(addr string) (net.Listener, error) {
+func (pool *PoolServer) listen(addr string, tlsConfig *tls.Config) (*listnObserver, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+
+	if tlsConfig != nil {
+		l = tls.NewListener(l, tlsConfig)
+	}
+
+	lo := &listnObserver{Listener: l, closed: make(chan struct{})}
+	pool.addCloser(lo)
+	
 	select {
 	case pool.listening <- struct{}{}:
 	default:
 	}
-	return l, nil
+	
+	return lo, nil
 }
 
 /* use uses the given listener waiting for a signal on
 the "stop" channel. */
-func (pool *PoolServer) use(l net.Listener) error {
-	return pool.Server.Serve(l)
+func (pool *PoolServer) use(lo *listnObserver) error {
+	lo.wg.Add(1)
+	err := pool.Server.Serve(lo.Listener)
+	lo.wg.Done()
+	select {
+	case _, opened := <- lo.closed:
+		if !opened {
+			err = nil // closed by pool.Close()
+		}
+	default:
+	}
+	return err
 }
 
 /* ListenAndUse listens the given (or configured if "" is given) address
@@ -274,7 +345,7 @@ func (pool *PoolServer) ListenAndUse(addr string) error {
 	if addr == "" {
 		addr = pool.Server.Addr
 	}
-	l, err := pool.listen(addr)
+	l, err := pool.listen(addr, nil)
 	if err != nil {
 		return err
 	}
@@ -287,16 +358,35 @@ func (pool *PoolServer) ListenAndUseTLS(addr string) error {
 	if addr == "" {
 		addr = pool.Server.Addr
 	}
-	l, err := pool.listen(addr)
+	l, err := pool.listen(addr, pool.Server.TLSConfig)
 	if err != nil {
 		return err
 	}
-	return pool.use(tls.NewListener(l, pool.Server.TLSConfig))
+	return pool.use(l)
 }
 
 /* Close closes the pool listener. */
 func (pool *PoolServer) Close() error {
-	return pool.Server.Close()
+	var err error
+
+	pool.lock.Lock()
+	for i := range pool.cList {
+		switch c := pool.cList[i].(type) {
+		case *websocket.Conn:
+			c.Close() // skip socket error
+		default:
+			if _err := c.Close(); _err != nil {
+				if err == nil {
+					err = _err
+				}
+			}
+		}
+		pool.cList[i] = nil
+	}
+	pool.cList = pool.cList[:0]
+	pool.lock.Unlock()
+
+	return err
 }
 
 /* Go invokes the given remote function asynchronously. The name of the

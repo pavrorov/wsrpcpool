@@ -172,7 +172,7 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 				}
 				if callIn != nil {
 					errOut := make(chan error)
-					handle(callIn, errOut)(ws)
+					invoker(callIn, errOut)(ws)
 					if err := <- errOut; err == nil {
 						_break = true // callIn is closed
 					}

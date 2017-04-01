@@ -93,22 +93,6 @@ func TestBindName(t *testing.T) {
 	}
 }
 
-/* closeConns closes the given pool and provider connections. */
-func closeConns(t *testing.T, pool io.Closer, closers ...io.Closer) {
-	for _, cl := range closers {
-		if cl != nil {
-			if err := cl.Close(); err != nil {
-				t.Error(err)
-			}
-		}
-	}
-	if pool != nil {
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	}
-}
-
 /* waitConnected waits for the given connection to either connect
 or be closed. Returns the connected flag value. */
 func waitConnected(pc *PoolConn) bool {
@@ -150,16 +134,23 @@ func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen fu
 	if pool == nil {
 		t.Fatal("Unable to instantiate a plain pool")
 	}
+	defer func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := listen(pool); err != nil {
 			t.Error(err)
 		}
 	}()
 	select {
 	case <-pool.Listening:
-	case <-pool.Closed:
-		t.Fatal(pool.Close())
+	case <-done:
+		t.Fatal("Pool closed unexpectedly")
 	}
 
 	ps, err := getproviders()
@@ -175,7 +166,13 @@ func testConnection(t *testing.T, getpool func() (*PoolServer, error), listen fu
 		t.Error(err)
 	}
 
-	closeConns(t, pool, conns...)
+	for _, c := range conns {
+		if c != nil {
+			if err := c.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	}
 }
 
 /* TestConnection tests for a successful provider to pool server connection
@@ -514,14 +511,16 @@ func TestReconnectTLSAuth(t *testing.T) {
 							break loop
 						}
 
+						done := make(chan struct{})
 						go func() {
+							defer close(done)
 							if err := pool.ListenAndUseTLS("localhost:8443"); err != nil {
 								t.Error(err)
 							}
 						}()
 						select {
 						case <-pool.Listening:
-						case <-pool.Closed:
+						case <-done:
 							t.Errorf("Pool closed unexpectedly (%d)", i)
 							break loop
 						}
