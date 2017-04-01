@@ -490,7 +490,7 @@ func TestReconnectTLSAuth(t *testing.T) {
 		},
 		nil,
 		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
-			pc, connected := tryConnect(ps[0], 1)
+			pc, connected := tryConnect(ps[0], 100)
 			if !connected {
 				t.Error("Not connected")
 			} else {
