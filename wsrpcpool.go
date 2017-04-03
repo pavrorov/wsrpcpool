@@ -421,12 +421,19 @@ func (pool *PoolServer) Go(serviceMethod string, args interface{}, reply interfa
 }
 
 /* Call invokes the given remote function and waits for it to complete,
-returning its error status. */
+returning its error status. If an I/O error encountered, then the
+function re-queues the call. */
 func (pool *PoolServer) Call(serviceMethod string, args interface{}, reply interface{}) error {
-	if call, err := pool.Go(serviceMethod, args, reply, nil); err == nil {
-		call = <-call.Done
-		return call.Error
-	} else {
-		return err
+	for {
+		if call, err := pool.Go(serviceMethod, args, reply, nil); err == nil {
+			call = <-call.Done
+			switch call.Error {
+				case rpc.ErrShutdown, io.ErrUnexpectedEOF:
+			default:
+				return call.Error
+			}
+		} else {
+			return err
+		}
 	}
 }
