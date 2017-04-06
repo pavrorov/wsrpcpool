@@ -281,15 +281,15 @@ are considered the default providers. The expected RPC
 protocol is what is used by rpc.NewClient().
 */
 func (pool *PoolServer) Bind(path string, providers ...string) {
-	pool.BindProto(path, rpc.NewClient, providers...)
+	pool.BindWith(path, rpc.NewClient, providers...)
 }
 
 /*
-Bind associates the given path with the particular RPC protocol
+BindWith associates the given path with the particular RPC protocol
 client. If no providers are specified the connections at the path
 are considered the default providers.
 */
-func (pool *PoolServer) BindProto(path string, newClient func(conn io.ReadWriteCloser) *rpc.Client, providers ...string) {
+func (pool *PoolServer) BindWith(path string, newClient func(conn io.ReadWriteCloser) *rpc.Client, providers ...string) {
 	pool.lock.Lock()
 	mux := pool.assertMux()
 	if pool.pathMap == nil {
@@ -331,14 +331,14 @@ BindIn handles incoming RPC calls on the given path.
 The expected RPC protocol is what is used by rpc.ServeConn().
 */
 func (pool *PoolServer) BindIn(path string) {
-	pool.BindProtoIn(path, rpc.ServeConn)
+	pool.BindInWith(path, rpc.ServeConn)
 }
 
 /*
-BindIn handles all the connections to the given path with the
+BindInWith handles all the connections to the given path with the
 given RPC protocol handler.
 */
-func (pool *PoolServer) BindProtoIn(path string, serveConn func(conn io.ReadWriteCloser)) {
+func (pool *PoolServer) BindInWith(path string, serveConn func(conn io.ReadWriteCloser)) {
 	pool.lock.Lock()
 	mux := pool.assertMux()
 	mux.Handle(path, pool.handleIn(serveConn))
