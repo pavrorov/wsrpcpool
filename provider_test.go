@@ -1,14 +1,16 @@
-/* RPC with a pool of providers each connected via a web-socket. */
 package wsrpcpool
+
 // Provider testing module
 
 import (
 	"testing"
 )
 
-/* TestNewProvider tests the NewProvider works as expected. */
+/*
+TestNewProvider tests the NewProvider works as expected.
+*/
 func TestNewProvider(t *testing.T) {
-	p, err := NewProvider("ws://localhost:8080/")
+	p, err := NewProvider()
 	if err != nil {
 		t.Error(err)
 	}
@@ -17,9 +19,11 @@ func TestNewProvider(t *testing.T) {
 	}
 }
 
-/* TestNewProviderTLSAuth tests the NewProviderTLSAuth works as expected. */
+/*
+TestNewProviderTLSAuth tests the NewProviderTLSAuth works as expected.
+*/
 func TestNewProviderTLSAuth(t *testing.T) {
-	p, err := NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key")
+	p, err := NewProviderTLSAuth("testfiles/client.crt", "testfiles/client.key")
 	if err != nil {
 		t.Error(err)
 	}
@@ -29,9 +33,11 @@ func TestNewProviderTLSAuth(t *testing.T) {
 	checkProviderCerts(t, p, 1, 0)
 }
 
-/* TestNewProviderCustomCA tests the NewProvider works as expected with a custom root CA cert. */
+/*
+TestNewProviderCustomCA tests the NewProvider works as expected with a custom root CA cert.
+*/
 func TestNewProviderCustomCA(t *testing.T) {
-	p, err := NewProvider("wss://localhost:8443/", "testfiles/rootCA.crt")
+	p, err := NewProvider("testfiles/rootCA.crt")
 	if err != nil {
 		t.Error(err)
 	}
@@ -41,9 +47,11 @@ func TestNewProviderCustomCA(t *testing.T) {
 	checkProviderCerts(t, p, 0, 1)
 }
 
-/* TestNewProviderTLSAuthCustomCA tests the NewProviderTLSAuth works as expected with a custom root CA cert. */
+/*
+TestNewProviderTLSAuthCustomCA tests the NewProviderTLSAuth works as expected with a custom root CA cert.
+*/
 func TestNewProviderTLSAuthCustomCA(t *testing.T) {
-	p, err := NewProviderTLSAuth("wss://localhost:8443/", "testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+	p, err := NewProviderTLSAuth("testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
 	if err != nil {
 		t.Error(err)
 	}
@@ -53,22 +61,21 @@ func TestNewProviderTLSAuthCustomCA(t *testing.T) {
 	checkProviderCerts(t, p, 1, 1)
 }
 
-/* checkProviderCerts checks that a specified number of auth and root CA
-certificates are loaded into the TlsConfig of the provider. */
+/*
+checkProviderCerts checks that a specified number of auth and root CA
+certificates are loaded into the TlsConfig of the provider.
+*/
 func checkProviderCerts(t *testing.T, p *Provider, certs, rootCAs int) {
-	if p.Config.TlsConfig == nil {
-		t.Fatal("TLSConfig is nil")
-	}
-	csLen := len(p.Config.TlsConfig.Certificates)
+	csLen := len(p.TlsConfig.Certificates)
 	if csLen != certs {
 		t.Errorf("Expected %d certificates, got %d\n", certs, csLen)
 	}
-	if p.Config.TlsConfig.RootCAs == nil {
+	if p.TlsConfig.RootCAs == nil {
 		if rootCAs > 0 {
 			t.Fatal("Root CA pool is nil")
 		}
 	} else {
-		subjs := p.Config.TlsConfig.RootCAs.Subjects();
+		subjs := p.TlsConfig.RootCAs.Subjects();
 		if len(subjs) != rootCAs {
 			t.Errorf("Expected %d certificate in the root CA pool, got %d\n", rootCAs, len(subjs))
 		}

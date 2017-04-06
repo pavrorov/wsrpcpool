@@ -6,28 +6,36 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"golang.org/x/net/websocket"
+	"io"
 	"net/rpc"
-	"net/rpc/jsonrpc"
 	"time"
 )
 
 var (
-	/* DefaultDelay is the default delay between pool
-	server re-connections. The default value is 100s.*/
+	// DefaultDelay is the default delay between pool server re-connections. The default value is 100s.
 	DefaultDelay = 100 * time.Millisecond
+	// DefaultOrigin is the default origin URL for a Provider
+	DefaultOrigin string = "http://localhost/"
 )
 
-/* Provider is intended to connect to a PoolServer and handle RPC calls. */
+/*
+Provider is intended to connect to a PoolServer and handle RPC calls.
+*/
 type Provider struct {
-	Config *websocket.Config
-	// Maximum number of connection attempts. Default is unlimited.*/
+	// TLS configuration shared by all pool connections instantiated from this provider
+	TlsConfig tls.Config
+	// Maximum number of connection attempts. Default is unlimited.
 	MaxAttempts int
 	// The delay between reconnections. The default is DefaultReconnectDelay (100ms).
 	Delay time.Duration
+	// Origin URL used for all connections
+	Origin string
 }
 
-/* PoolConn represents a signle pool connection that handles
-RPC requests coming from a pool server. */
+/*
+PoolConn represents a signle pool connection that handles
+RPC requests coming from a pool server.
+*/
 type PoolConn struct {
 	// Error channel
 	Error <-chan error
@@ -41,36 +49,36 @@ type PoolConn struct {
 	stop chan struct{}
 }
 
-/* PoolCallerConn represents a signle connection that is
-used to send RPC calls *to* the pool. */
+/*
+PoolCallerConn represents a signle connection that is
+used to send RPC calls *to* the pool.
+*/
 type PoolCallerConn struct {
 	*PoolConn
 	// Call channel
 	Calls chan *rpc.Call
 }
 
-/* NewProvider returns a new Provider instance tuned to the given pool URL
-with no SSL client-side certificate authentication. The optional set of
-root CAs, if any, are used to validate the pool server certificate in the
-case wss:// URL is used. */
-func NewProvider(url string, rootCAs ...string) (*Provider, error) {
-	conf, err := websocket.NewConfig(url, "http://localhost/")
-	if err != nil {
+/*
+NewProvider returns a new plain Provider instance with no SSL client-side
+certificate authentication. The optional set of root CAs, if any, are used
+to validate the pool server certificate when wss:// URL scheme is used.
+*/
+func NewProvider(rootCAs ...string) (*Provider, error) {
+	p := &Provider{Origin: DefaultOrigin, Delay: DefaultDelay}
+	if err := p.AppendRootCAs(rootCAs...); err != nil {
 		return nil, err
-	} else {
-		p := &Provider{Config: conf}
-		if err := p.AppendRootCAs(rootCAs...); err != nil {
-			return nil, err
-		}
-		return p, nil
 	}
+	return p, nil
 }
 
-/* NewProviderTLS returns a Provider instance equipped with the given
+/*
+NewProviderTLS returns a new Provider instance equipped with the given
 SSL certificate to authenticate itself with the pool server and an optional
-set of root CAs to validate the pool server certificate. */
-func NewProviderTLSAuth(url, certfile, keyfile string, rootCAs ...string) (*Provider, error) {
-	p, err := NewProvider(url)
+set of root CAs to validate the pool server certificate.
+*/
+func NewProviderTLSAuth(certfile, keyfile string, rootCAs ...string) (*Provider, error) {
+	p, err := NewProvider()
 	if err == nil {
 		if err := p.AppendCertificate(certfile, keyfile); err != nil {
 			return nil, err
@@ -84,58 +92,85 @@ func NewProviderTLSAuth(url, certfile, keyfile string, rootCAs ...string) (*Prov
 	}
 }
 
-/* AppendCertificate appends an SSL certificate to the set of provider
+/*
+AppendCertificate appends an SSL certificate to the set of provider
 certificates loading it from the pair of public certificate and private
-key files. */
+key files.
+*/
 func (p *Provider) AppendCertificate(certfile, keyfile string) error {
-	if p.Config.TlsConfig == nil {
-		p.Config.TlsConfig = &tls.Config{}
-	}
-	return appendCertificate(p.Config.TlsConfig, certfile, keyfile)
+	return appendCertificate(&p.TlsConfig, certfile, keyfile)
 }
 
-/* AppendRootCAs appends the given SSL root CA certificate files to the
-set of ones that are used to validate the pool server certificate. */
+/*
+AppendRootCAs appends the given SSL root CA certificate files to the
+set of ones that are used to validate the pool server certificate.
+*/
 func (p *Provider) AppendRootCAs(rootCAs ...string) error {
 	if len(rootCAs) == 0 {
 		return nil
 	}
-	if p.Config.TlsConfig == nil {
-		p.Config.TlsConfig = &tls.Config{}
+	if p.TlsConfig.RootCAs == nil {
+		p.TlsConfig.RootCAs = x509.NewCertPool()
 	}
-	if p.Config.TlsConfig.RootCAs == nil {
-		p.Config.TlsConfig.RootCAs = x509.NewCertPool()
-	}
-	return appendCAs(p.Config.TlsConfig.RootCAs, rootCAs...)
+	return appendCAs(p.TlsConfig.RootCAs, rootCAs...)
 }
 
 /*
-ConnectAndServe connects to the configured server pool URL
-and asynchronously handles incoming JSON-RPC messages.
-The connection is automatically re-established when broken
-until MaxAttempts is exceeded.
+ConnectAndServe connects to the pool at the given URL
+and asynchronously handles incoming RPC messages with
+rpc.ServeConn(). The connection is automatically re-established
+when broken until MaxAttempts is exceeded. Don't forget to call
+rpc.Register() with your exported objects.
+*/
+func (p *Provider) ConnectAndServe(url string) (*PoolConn, error) {
+	return p.ConnectAndServeWith(url, rpc.ServeConn)
+}
+
+/*
+ConnectAndServeWith connects to the pool at the given
+URL and asynchronously handles incoming RPC messages
+with the specified handler. The connection is automatically
+re-established when broken until MaxAttempts is exceeded.
 Don't forget to call rpc.Register() with your exported objects.
 */
-func (p *Provider) ConnectAndServe() *PoolConn {
-	return p.connect(nil)
+func (p *Provider) ConnectAndServeWith(url string, serveConn func(conn io.ReadWriteCloser)) (*PoolConn, error) {
+	return p.connect(url, serveConn, nil, nil)
 }
 
 /*
-ConnectAndUse connects to the configured server pool URL
-to send RPC calls *to* the pool with JSON-RPC messages.
+ConnectAndUse connects to the pool at the given URL
+to send RPC calls *to* the pool using rpc.NewClient().
 The connection is automatically re-established when broken
 until MaxAttempts is exceeded. See PoolServer.BindIn()
 method for more information.
 */
-func (p *Provider) ConnectAndUse() *PoolCallerConn {
-	calls := make(chan *rpc.Call)
-	pc := p.connect(calls)
-	return &PoolCallerConn{pc, calls}
+func (p *Provider) ConnectAndUse(url string) (*PoolCallerConn, error) {
+	return p.ConnectAndUseWith(url, rpc.NewClient)
 }
 
-func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
+/*
+ConnectAndUseWith connects to the pool at the given URL
+to send RPC calls *to* the pool using the specified client.
+The connection is automatically re-established when broken
+until MaxAttempts is exceeded. See PoolServer.BindIn()
+method for more information.
+*/
+func (p *Provider) ConnectAndUseWith(url string, newClient func(conn io.ReadWriteCloser) *rpc.Client) (*PoolCallerConn, error) {
+	calls := make(chan *rpc.Call)
+	if pc, err := p.connect(url, nil, newClient, calls); err != nil {
+		return nil, err
+	} else {
+		return &PoolCallerConn{pc, calls}, nil
+	}
+}
+
+/*
+connect returns the new active pool connection that automatically
+re-established when broken until provider's MaxAttempts value is
+exceeded.
+*/
+func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), newClient func(conn io.ReadWriteCloser) *rpc.Client, callIn <-chan *rpc.Call) (*PoolConn, error) {
 	var (
-		ws       *websocket.Conn
 		pc       PoolConn
 		err      error
 		attempts int
@@ -155,13 +190,23 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 		close(pc.stop)
 		errc <- nil
 		close(errc)
-		return &pc
+		return &pc, nil
 	}
 
+	origin := p.Origin
+	if origin == "" {
+		origin = DefaultOrigin
+	}
+	config, err := websocket.NewConfig(url, origin)
+	if err != nil {
+		return nil, err
+	}
+	config.TlsConfig = &p.TlsConfig
+	
 	go func() {
 	loop:
 		for {
-			ws, err = websocket.DialConfig(p.Config)
+			ws, err := websocket.DialConfig(config)
 			attempts++
 
 			var _break bool
@@ -172,8 +217,8 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 				}
 				if callIn != nil {
 					errOut := make(chan error)
-					invoker(callIn, errOut)(ws)
-					if err := <- errOut; err == nil {
+					invoker(newClient, callIn, errOut)(ws)
+					if err := <-errOut; err == nil {
 						_break = true // callIn is closed
 					}
 				} else {
@@ -185,7 +230,7 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 							ws.Close()
 						}
 					}()
-					jsonrpc.ServeConn(ws)
+					serveConn(ws)
 					close(done)
 				}
 			}
@@ -217,30 +262,56 @@ func (p *Provider) connect(callIn <-chan *rpc.Call) *PoolConn {
 		close(closed)
 	}()
 
-	return &pc
+	return &pc, nil
 }
 
-/* ConnectAndServeMulti asynchronously runs the given number of
-simultaneous connections using ConnectAndServe(). */
-func (p *Provider) ConnectAndServeMulti(count int) []*PoolConn {
-	cons := make([]*PoolConn, count, count)
+/*
+ConnectAndServeMulti asynchronously runs the given number of
+simultaneous connections using ConnectAndServe().
+*/
+func (p *Provider) ConnectAndServeMulti(url string, count int) ([]*PoolConn, error) {
+	conns := make([]*PoolConn, count, count)
 	for n := 0; n < count; n++ {
-		cons = append(cons, p.ConnectAndServe())
+		if conn, err := p.ConnectAndServe(url); err != nil {
+			return conns, err
+		} else {
+			conns = append(conns, conn)
+		}
 	}
-	return cons
+	return conns, nil
 }
 
-/* Close closes the connection and returns the last unread error
-from pc.Error. */
+/*
+ConnectAndServeMultiWith asynchronously runs the given number of
+simultaneous connections using ConnectAndServeWith().
+*/
+func (p *Provider) ConnectAndServeMultiWith(url string, serveConn func(conn io.ReadWriteCloser), count int) ([]*PoolConn, error) {
+	conns := make([]*PoolConn, count, count)
+	for n := 0; n < count; n++ {
+		if conn, err := p.ConnectAndServeWith(url, serveConn); err != nil {
+			return conns, err
+		} else {
+			conns = append(conns, conn)
+		}
+	}
+	return conns, nil
+}
+
+/*
+Close closes the connection and returns the last unread error
+from pc.Error.
+*/
 func (pc *PoolConn) Close() error {
 	close(pc.stop)
 	return <-pc.Error
 }
 
-/* Go invokes the given remote function *on the pool server* asynchronously.
+/*
+Go invokes the given remote function *on the pool server* asynchronously.
 The name of the function should be "Service.Method" same, as in the package
 net/rpc. If "done" is nil, a new channel is allocated and passed in the return
-value. See net/rpc package for details. */
+value. See net/rpc package for details.
+*/
 func (pcc *PoolCallerConn) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
 	call := &rpc.Call{
 		ServiceMethod: serviceMethod,
@@ -256,8 +327,10 @@ func (pcc *PoolCallerConn) Go(serviceMethod string, args interface{}, reply inte
 	return call, nil
 }
 
-/* Call invokes the given remote function *on the pool server* and waits for it to
-complete, returning its error status. */
+/*
+Call invokes the given remote function *on the pool server* and waits for it to
+complete, returning its error status.
+*/
 func (pcc *PoolCallerConn) Call(serviceMethod string, args interface{}, reply interface{}) error {
 	if call, err := pcc.Go(serviceMethod, args, reply, nil); err == nil {
 		call = <-call.Done
@@ -267,8 +340,10 @@ func (pcc *PoolCallerConn) Call(serviceMethod string, args interface{}, reply in
 	}
 }
 
-/* Close closes the caller connection and returns the last unread
-error from pcc.Error. */
+/*
+Close closes the caller connection and returns the last unread
+error from pcc.Error.
+*/
 func (pcc *PoolCallerConn) Close() error {
 	close(pcc.Calls)
 	return pcc.PoolConn.Close()
