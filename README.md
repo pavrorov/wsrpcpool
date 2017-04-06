@@ -113,8 +113,10 @@ case <-pc.Connected:
 case <-pc.Disconnected:
     // disconnected
 case <-pc.Closed:
-    // closed, call pc.Close() for error value
+    // closed by pc.Close() or MaxAttempts is exceeded
 }
+
+err := pc.Close()
 ```
 
 ## JSON-RPC
