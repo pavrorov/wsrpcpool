@@ -19,6 +19,7 @@ private providers (dynamic IPs, NAT).
 pool := NewPool()
 pool.Bind("/pool")
 pool.ListenAndUse(":8080")
+
 var ret string
 err := pool.Call("Backend.Get", "object_id-1", &ret)
 ```
@@ -34,12 +35,12 @@ pc, err := p.ConnectAndServe("ws://pool.my:8080/pool")
 
 ```go
 pool, err := NewPoolTLS("server.crt", "server.key")
-pool.ListenAndUseTLS(":8443")
+go pool.ListenAndUseTLS(":8443")
 ```
 
 ```go
 // Specify one or more custom CA certs to verify the pool cert if necessary
-p, err := NewProvider("testfiles/rootCA.crt")
+p, err := NewProvider("rootCA.crt")
 pc, err := p.ConnectAndServe("wss://pool.my:8443/pool")
 ```
 
@@ -48,7 +49,7 @@ pc, err := p.ConnectAndServe("wss://pool.my:8443/pool")
 ```go
 // Add one or more custom CA certs to verify a client cert if necessary
 pool, err := NewPoolTLSAuth("server.crt", "server.key", "rootCA.crt")
-pool.ListenAndUseTLS(":8443")
+go pool.ListenAndUseTLS(":8443")
 ```
 
 ```go
@@ -67,8 +68,51 @@ pool.BindIn("/cb")
 
 ```go
 pc, err := p.ConnectAndUse("wss://pool.my:8443/cb")
+
 var ret string
 err := pc.Call("PoolSide.Notify", "event_id-1", &ret)
+```
+
+## Use different URLs for different providers
+
+```go
+pool.Bind("/") // the default path
+pool.Bind("/db", "Database")
+pool.Bind("/files", "Filesystem")
+go pool.ListenAndUseTLS(":8443")
+
+var ret string
+pool.Call("Database.Select", "object_id-1", &ret) // goes to providers on /db
+pool.Call("Filesystem.Open", "file_id-1", &ret) // goes to providers on /files
+```
+
+```go
+rpc.Register(&Database{})
+p.ConnectAdServe("wss://pool.my:8443/db")
+```
+
+```go
+rpc.Register(&Filesystem{})
+p.ConnectAdServe("wss://pool.my:8443/files")
+```
+
+## Signals
+
+```go
+go pool.ListenAndUseTLS(":8443")
+<-pool.Listening
+// Now the pool server is listening for incoming connections
+```
+
+```go
+select {
+case <-pc.Connected:
+    // now connected or re-connected
+case <-pc.Disconnected:
+    // disconnected
+case <-pc.Closed:
+    // closed, call pc.Close() for error value
+}
 ```
 
 ## JSON-RPC
