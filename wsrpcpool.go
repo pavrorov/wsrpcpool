@@ -75,7 +75,8 @@ func NewPoolTLS(certfile, keyfile string) (*PoolServer, error) {
 
 /*
 NewPoolTLSAuth returns a PoolServer instance equipped with the given
-SSL certificate and a root CA certificates for client authentication.
+SSL certificate and one ore more root CA certificates for client
+authentication.
 */
 func NewPoolTLSAuth(certfile, keyfile string, clientCAs ...string) (*PoolServer, error) {
 	pool, err := NewPoolTLS(certfile, keyfile)
@@ -275,7 +276,7 @@ func (pool *PoolServer) assertMux() *http.ServeMux {
 
 /*
 Bind makes all the connections to the given path to be
-considered as means to make calls to the named providers.
+considered as the means to make calls to the named providers.
 If no providers are specified the connections at the path
 are considered the default providers. The expected RPC
 protocol is what is used by rpc.NewClient().
@@ -335,7 +336,7 @@ func (pool *PoolServer) BindIn(path string) {
 }
 
 /*
-BindInWith handles all the connections to the given path with the
+BindInWith handles all connections to the given path with the
 given RPC protocol handler.
 */
 func (pool *PoolServer) BindInWith(path string, serveConn func(conn io.ReadWriteCloser)) {
@@ -469,9 +470,9 @@ func (pool *PoolServer) Close() error {
 /*
 Go invokes the given remote function asynchronously. The name of the
 provider (if given as the first part of serviceMethod, i.e. "Provider.Function")
-is first searched in the PoolMap and the DefaultPool is used if it isn't there
-(or isn't specified). If "done" is nil, a new channel is allocated and passed in
-the return value. See net/rpc package for details.
+is first searched in the PoolMap. If not found (or isn't specified), the
+DefaultPool is used. If "done" is nil, a new channel is allocated and passed
+in the return value. See net/rpc package for details.
 */
 func (pool *PoolServer) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
 	var callIn chan *rpc.Call
@@ -502,7 +503,10 @@ func (pool *PoolServer) Go(serviceMethod string, args interface{}, reply interfa
 /*
 Call invokes the given remote function and waits for it to complete,
 returning its error status. If an I/O error encountered, then the
-function re-queues the call.
+function re-queues the call. The name of the provider (if given as the
+first part of serviceMethod, i.e. "Provider.Function")
+is first searched in the PoolMap. If not found (or isn't specified), the
+DefaultPool is used.
 */
 func (pool *PoolServer) Call(serviceMethod string, args interface{}, reply interface{}) error {
 	for {

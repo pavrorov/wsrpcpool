@@ -308,9 +308,10 @@ func (pc *PoolConn) Close() error {
 
 /*
 Go invokes the given remote function *on the pool server* asynchronously.
-The name of the function should be "Service.Method" same, as in the package
-net/rpc. If "done" is nil, a new channel is allocated and passed in the return
-value. See net/rpc package for details.
+For Go RPC providers the name of the function should be of the form
+"Service.Method" -- same as in the package net/rpc. If "done" is nil,
+a new channel is allocated and passed in the return value. See net/rpc
+package for details.
 */
 func (pcc *PoolCallerConn) Go(serviceMethod string, args interface{}, reply interface{}, done chan *rpc.Call) (*rpc.Call, error) {
 	call := &rpc.Call{
@@ -328,8 +329,10 @@ func (pcc *PoolCallerConn) Go(serviceMethod string, args interface{}, reply inte
 }
 
 /*
-Call invokes the given remote function *on the pool server* and waits for it to
-complete, returning its error status.
+Call invokes the given remote function *on the pool server* and waits for
+it to complete, returning its error status. For Go RPC providers the name
+of the function should be of the form "Service.Method" -- same as in the
+package net/rpc.
 */
 func (pcc *PoolCallerConn) Call(serviceMethod string, args interface{}, reply interface{}) error {
 	if call, err := pcc.Go(serviceMethod, args, reply, nil); err == nil {
