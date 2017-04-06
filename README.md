@@ -105,6 +105,8 @@ go pool.ListenAndUseTLS(":8443")
 ```
 
 ```go
+pc, err := p.ConnectAndServe("wss://pool.my:8443/pool")
+
 select {
 case <-pc.Connected:
     // now connected or re-connected
