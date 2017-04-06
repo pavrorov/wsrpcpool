@@ -111,7 +111,7 @@ select {
 case <-pc.Connected:
     // now connected or re-connected
 case <-pc.Disconnected:
-    // disconnected
+    // disconnected, may re-connect again
 case <-pc.Closed:
     // closed by pc.Close() or MaxAttempts is exceeded
 }
