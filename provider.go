@@ -5,8 +5,9 @@ package wsrpcpool
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 	"io"
+	"net/http"
 	"net/rpc"
 	"time"
 )
@@ -172,7 +173,6 @@ exceeded.
 func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), newClient func(conn io.ReadWriteCloser) *rpc.Client, callIn <-chan *rpc.Call) (*PoolConn, error) {
 	var (
 		pc       PoolConn
-		err      error
 		attempts int
 	)
 
@@ -197,16 +197,17 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 	if origin == "" {
 		origin = DefaultOrigin
 	}
-	config, err := websocket.NewConfig(url, origin)
-	if err != nil {
-		return nil, err
+	header := http.Header{"Origin": {origin}}
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &p.TlsConfig,
 	}
-	config.TlsConfig = &p.TlsConfig
-	
+
 	go func() {
+		var err error
 	loop:
 		for {
-			ws, err := websocket.DialConfig(config)
+			var ws *websocket.Conn
+			ws, _, err = dialer.Dial(url, header)
 			attempts++
 
 			var _break bool
@@ -215,10 +216,11 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 				case connected <- struct{}{}:
 				default:
 				}
+				
 				if callIn != nil {
 					errOut := make(chan error)
 					invoker(newClient, callIn, errOut)(ws)
-					if err := <-errOut; err == nil {
+					if err = <-errOut; err == nil {
 						_break = true // callIn is closed
 					}
 				} else {
@@ -230,14 +232,15 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 							ws.Close()
 						}
 					}()
-					serveConn(ws)
+					serveConn(wrapConn(ws))
 					close(done)
 				}
-			}
 
-			select {
-			case disconnected <- struct{}{}:
-			default:
+
+				select {
+				case disconnected <- struct{}{}:
+				default:
+				}
 			}
 
 			if _break {

@@ -9,7 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
 	"net"
@@ -39,6 +39,10 @@ type PoolServer struct {
 	cList []io.Closer
 	// Pool mutex
 	lock *sync.RWMutex
+	// CheckOrigin is used to check the "Origin" header value
+	// before HTTP connection upgrade. The default one always
+	// returns true
+	CheckOrigin func(r *http.Request) bool
 }
 
 var (
@@ -166,6 +170,7 @@ connObserver used to observe I/O errors in a websocket connection.
 */
 type connObserver struct {
 	*websocket.Conn
+	reader  io.Reader
 	ioError chan error
 }
 
@@ -185,10 +190,25 @@ func (conn *connObserver) reportError(err error) {
 Read implements io.Reader.
 */
 func (conn *connObserver) Read(p []byte) (n int, err error) {
-	n, err = conn.Conn.Read(p)
+	for n == 0 && err == nil {
+		if conn.reader == nil {
+			_, conn.reader, err = conn.NextReader()
+			if err != nil {
+				return
+			}
+		}
+
+		n, err = conn.reader.Read(p)
+
+		if err == io.EOF {
+			conn.reader = nil
+		}
+	}
+
 	if err != nil {
 		conn.reportError(err)
 	}
+
 	return
 }
 
@@ -196,24 +216,53 @@ func (conn *connObserver) Read(p []byte) (n int, err error) {
 Write implements io.Writer.
 */
 func (conn *connObserver) Write(p []byte) (n int, err error) {
-	n, err = conn.Conn.Write(p)
+	var w io.WriteCloser
+	w, err = conn.Conn.NextWriter(websocket.BinaryMessage)
+	if err != nil {
+		return
+	}
+
+	n, err = w.Write(p)
+
+	if err == nil {
+		err = w.Close()
+	}
+
 	if err != nil {
 		conn.reportError(err)
 	}
+
 	return
 }
 
 /*
-handle returns and invoker() function casted to the
-websocket.Handler type in order to get the necessary websocket
-handshake behavior. The invoker function is wrapped call
+upgrader returns the websocket.Upgrader to be used for the pool
+connections.
+*/
+func (pool *PoolServer) upgrader() *websocket.Upgrader {
+	co := pool.CheckOrigin
+	if co == nil {
+		co = func(r *http.Request) bool {
+			return true
+		}
+	}
+	return &websocket.Upgrader{CheckOrigin: co}
+}
+
+/*
+handle returns an http handler function which upgrades the
+HTTP request to a websocket connection and then uses invoker()
+with it. The invoker function is wrapped call
 to addCloser() to register the connection with the pool.
 */
-func (pool *PoolServer) handle(newClient func(conn io.ReadWriteCloser) *rpc.Client, callIn <-chan *rpc.Call) websocket.Handler {
+func (pool *PoolServer) handle(newClient func(conn io.ReadWriteCloser) *rpc.Client, callIn <-chan *rpc.Call) http.HandlerFunc {
 	_invoker := invoker(newClient, callIn, nil)
-	return websocket.Handler(func(ws *websocket.Conn) {
-		pool.addCloser(ws)
-		_invoker(ws)
+	return http.HandlerFunc(func(rw http.ResponseWriter, rq *http.Request) {
+		ws, err := pool.upgrader().Upgrade(rw, rq, nil)
+		if err == nil {
+			pool.addCloser(ws)
+			_invoker(ws)
+		} // TODO: Report the error
 	})
 }
 
@@ -228,6 +277,15 @@ func (pool *PoolServer) addCloser(c io.Closer) {
 }
 
 /*
+wrapConn wraps the given websocket connection with the
+connObserver making it implement the io.ReadWriteCloser
+interface and providing for it a error reporting channel.
+*/
+func wrapConn(ws *websocket.Conn) *connObserver {
+	return &connObserver{Conn: ws, ioError: make(chan error, 10)}
+}
+
+/*
 invoker returns a function that the passes calls from the
 given channel over a websocket connection. In the case of I/O error
 it is written to errOut channel if it is provided and the function
@@ -237,7 +295,7 @@ closed on return.
 */
 func invoker(newClient func(conn io.ReadWriteCloser) *rpc.Client, callIn <-chan *rpc.Call, errOut chan<- error) func(ws *websocket.Conn) {
 	return func(ws *websocket.Conn) {
-		conn := &connObserver{ws, make(chan error, 10)}
+		conn := wrapConn(ws)
 		client := newClient(conn)
 		defer client.Close()
 		defer func() {
@@ -311,19 +369,22 @@ func (pool *PoolServer) BindWith(path string, newClient func(conn io.ReadWriteCl
 	} else {
 		pool.DefaultPool = callIn
 	}
-	mux.Handle(path, pool.handle(newClient, callIn))
+	mux.HandleFunc(path, pool.handle(newClient, callIn))
 	pool.lock.Unlock()
 }
 
 /*
-handleIn returns the websocket.Handler that the serves
-incoming RPC calls over a websocket connection using
+handleIn returns a http handler function that the serves
+*incoming* RPC calls over a websocket connection using
 the given handler.
 */
-func (pool *PoolServer) handleIn(serveConn func(conn io.ReadWriteCloser)) websocket.Handler {
-	return websocket.Handler(func(ws *websocket.Conn) {
-		pool.addCloser(ws)
-		serveConn(ws)
+func (pool *PoolServer) handleIn(serveConn func(conn io.ReadWriteCloser)) http.HandlerFunc {
+	return http.HandlerFunc(func(rw http.ResponseWriter, rq *http.Request) {
+		ws, err := pool.upgrader().Upgrade(rw, rq, nil)
+		if err == nil {
+			pool.addCloser(ws)
+			serveConn(wrapConn(ws))
+		}
 	})
 }
 
