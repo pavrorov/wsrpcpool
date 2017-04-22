@@ -207,18 +207,7 @@ TestConnection tests for a successful provider to pool server connection
 over an unencrypted channel.
 */
 func TestConnection(t *testing.T) {
-	testConnection(t,
-		func() (*PoolServer, error) {
-			return NewPool(), nil
-		},
-		func(pool *PoolServer) error {
-			pool.Bind("/")
-			return pool.ListenAndUse("localhost:8080")
-		},
-		func() ([]*Provider, error) {
-			p, err := NewProvider()
-			return []*Provider{p}, err
-		},
+	testConnectionPlain(t, nil, nil,
 		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
 			pc, err, connected := tryConnect("ws://localhost:8080/", ps[0], 1)
 			if err != nil {
@@ -296,6 +285,35 @@ certificates configured.
 */
 func newTLSAuthProvider() (*Provider, error) {
 	return NewProviderTLSAuth("testfiles/client.crt", "testfiles/client.key", "testfiles/rootCA.crt")
+}
+
+/*
+testConnectionPlain tests for a successful provider to pool server connection
+over an unencrypted channel using the provided test function and optional
+hooks.
+*/
+func testConnectionPlain(t *testing.T, setupPool func(pool *PoolServer), getproviders func() ([]*Provider, error), connect func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error)) {
+	testConnection(t,
+		func() (*PoolServer, error) {
+			return NewPool(), nil
+		},
+		func(pool *PoolServer) error {
+			if setupPool != nil {
+				setupPool(pool)
+			} else {
+				pool.Bind("/")
+			}
+			return pool.ListenAndUse("localhost:8080")
+		},
+		func() ([]*Provider, error) {
+			if getproviders != nil {
+				return getproviders()
+			} else {
+				p, err := NewProvider()
+				return []*Provider{p}, err
+			}
+		},
+		connect)
 }
 
 /*
@@ -425,6 +443,26 @@ func testCalls(t *testing.T, client rpcClient) {
 			t.Error(err)
 		}
 	}
+}
+
+/*
+TestCallPlain tests for a successful method call over
+an unencrypted channel.
+*/
+func TestCallPlain(t *testing.T) {
+	testConnectionPlain(t, nil, nil,
+		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
+			pc, err, connected := tryConnect("ws://localhost:8080/", ps[0], 1)
+			if err != nil {
+				return nil, err
+			}
+			if !connected {
+				t.Error("Not connected")
+			} else {
+				testCalls(t, pool)
+			}
+			return []io.Closer{pc}, nil
+		})
 }
 
 /*

@@ -190,11 +190,12 @@ func (conn *connObserver) reportError(err error) {
 Read implements io.Reader.
 */
 func (conn *connObserver) Read(p []byte) (n int, err error) {
+loop:
 	for n == 0 && err == nil {
 		if conn.reader == nil {
 			_, conn.reader, err = conn.NextReader()
 			if err != nil {
-				return
+				break loop
 			}
 		}
 
@@ -202,9 +203,10 @@ func (conn *connObserver) Read(p []byte) (n int, err error) {
 
 		if err == io.EOF {
 			conn.reader = nil
+			err = nil
 		}
 	}
-
+	
 	if err != nil {
 		conn.reportError(err)
 	}
@@ -226,6 +228,8 @@ func (conn *connObserver) Write(p []byte) (n int, err error) {
 
 	if err == nil {
 		err = w.Close()
+	} else {
+		w.Close()
 	}
 
 	if err != nil {
@@ -576,7 +580,13 @@ func (pool *PoolServer) Call(serviceMethod string, args interface{}, reply inter
 			switch call.Error {
 			case rpc.ErrShutdown, io.ErrUnexpectedEOF:
 			default:
-				return call.Error
+				if call.Error == nil {
+					return nil
+				}
+				if ! websocket.IsCloseError(call.Error, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+					return call.Error
+				}
+				// retry the call
 			}
 		} else {
 			return err

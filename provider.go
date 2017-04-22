@@ -230,6 +230,7 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 						case <-done:
 						case <-pc.stop:
 							ws.Close()
+							_break = true
 						}
 					}()
 					serveConn(wrapConn(ws))
