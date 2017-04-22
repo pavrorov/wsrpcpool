@@ -43,6 +43,8 @@ type PoolServer struct {
 	// before HTTP connection upgrade. The default one always
 	// returns true
 	CheckOrigin func(r *http.Request) bool
+	// OnConn handler is called on new connections
+	OnConn func(ws *websocket.Conn) error
 }
 
 var (
@@ -263,6 +265,14 @@ func (pool *PoolServer) handle(newClient func(conn io.ReadWriteCloser) *rpc.Clie
 	_invoker := invoker(newClient, callIn, nil)
 	return http.HandlerFunc(func(rw http.ResponseWriter, rq *http.Request) {
 		ws, err := pool.upgrader().Upgrade(rw, rq, nil)
+		if err == nil {
+			if pool.OnConn != nil {
+				err = pool.OnConn(ws)
+				if err != nil {
+					ws.Close()
+				}
+			}
+		}
 		if err == nil {
 			pool.addCloser(ws)
 			_invoker(ws)

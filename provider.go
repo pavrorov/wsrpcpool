@@ -17,6 +17,10 @@ var (
 	DefaultDelay = 100 * time.Millisecond
 	// DefaultOrigin is the default origin URL for a Provider
 	DefaultOrigin string = "http://localhost/"
+	// DefaultPingInterval defines the default period of Ping requests -- 5s.
+	DefaultPingInterval = 5 * time.Second
+	// DefaultMaxPings defines the default value for maximum unanswered Ping requests -- 2
+	DefaultMaxPings = 2
 )
 
 /*
@@ -31,6 +35,10 @@ type Provider struct {
 	Delay time.Duration
 	// Origin URL used for all connections
 	Origin string
+	// PingInterval defines the period of Ping requests. Set 0 to disable pings.
+	PingInterval time.Duration
+	// MaxPings defines the value for maximum unanswered Ping requests
+	MaxPings int
 }
 
 /*
@@ -66,7 +74,12 @@ certificate authentication. The optional set of root CAs, if any, are used
 to validate the pool server certificate when wss:// URL scheme is used.
 */
 func NewProvider(rootCAs ...string) (*Provider, error) {
-	p := &Provider{Origin: DefaultOrigin, Delay: DefaultDelay}
+	p := &Provider{
+		Origin: DefaultOrigin,
+		Delay: DefaultDelay,
+		PingInterval: DefaultPingInterval,
+		MaxPings: DefaultMaxPings,
+	}
 	if err := p.AppendRootCAs(rootCAs...); err != nil {
 		return nil, err
 	}
@@ -225,6 +238,7 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 					}
 				} else {
 					done := make(chan struct{})
+					NewPingPong(ws, p.PingInterval, p.MaxPings, nil)
 					go func() {
 						select {
 						case <-done:
@@ -236,7 +250,6 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 					serveConn(wrapConn(ws))
 					close(done)
 				}
-
 
 				select {
 				case disconnected <- struct{}{}:
