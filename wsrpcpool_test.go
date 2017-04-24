@@ -4,10 +4,13 @@ package wsrpcpool
 
 import (
 	"errors"
+	"github.com/gorilla/websocket"
 	"io"
+	"net/http"
 	"net/rpc"
 	"sync"
 	"testing"
+	"time"
 )
 
 /*
@@ -608,15 +611,18 @@ func TestCallTLSAuthMulti(t *testing.T) {
 }
 
 /*
-TestReconnectTLSAuth tests the ability of a authenticated encrypted connection
-to automatically re-connect if broken.
+testReconnectTLSAuth tests the ability of a authenticated encrypted connection
+to automatically re-connect if broken using the stop / resume hooks.
 */
-func TestReconnectTLSAuth(t *testing.T) {
-	testConnectionTLSAuth(t,
-		func(pool *PoolServer) {
-			pool.Bind("/")
+func testReconnectTLSAuth(t *testing.T, setupPool func(pool *PoolServer), setupProvider func(p *Provider), stop func(pool *PoolServer) error, resume func(pool *PoolServer) error) {
+	testConnectionTLSAuth(t, setupPool,
+		func() ([]*Provider, error) {
+			p, err := newTLSAuthProvider()
+			if setupProvider != nil {
+				setupProvider(p)
+			}
+			return []*Provider{p}, err
 		},
-		nil,
 		func(pool *PoolServer, ps ...*Provider) ([]io.Closer, error) {
 			pc, err, connected := tryConnect("wss://localhost:8443/", ps[0], 20)
 			if err != nil {
@@ -632,8 +638,9 @@ func TestReconnectTLSAuth(t *testing.T) {
 						break loop
 					}
 					if i < ps[0].MaxAttempts {
-						if err := pool.Close(); err != nil {
+						if err := stop(pool); err != nil {
 							t.Error(err)
+							break loop
 						}
 						select {
 						case <-pc.Disconnected:
@@ -641,21 +648,10 @@ func TestReconnectTLSAuth(t *testing.T) {
 							t.Errorf("Connection closed unexpectedly (%d)", i)
 							break loop
 						}
-
-						done := make(chan struct{})
-						go func() {
-							defer close(done)
-							if err := pool.ListenAndUseTLS("localhost:8443"); err != nil {
-								t.Error(err)
-							}
-						}()
-						select {
-						case <-pool.Listening:
-						case <-done:
-							t.Errorf("Pool closed unexpectedly (%d)", i)
+						if err := resume(pool); err != nil {
+							t.Error(err)
 							break loop
 						}
-
 						if connected = waitConnected(pc); !connected {
 							t.Errorf("Reconnect %d failed", i)
 							break loop
@@ -664,5 +660,83 @@ func TestReconnectTLSAuth(t *testing.T) {
 				}
 			}
 			return []io.Closer{pc}, nil
+		})
+}
+
+/*
+TestReconnectTLSAuth tests the ability of a authenticated encrypted connection
+to automatically re-connect if broken (pool is closed).
+*/
+func TestReconnectTLSAuth(t *testing.T) {
+	testReconnectTLSAuth(t, nil, nil,
+		func(pool *PoolServer) error {
+			return pool.Close()
+		},
+		func(pool *PoolServer) error {
+			var err error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				err = pool.ListenAndUseTLS("localhost:8443")
+			}()
+			select {
+			case <-pool.Listening:
+			case <-done:
+				err = errors.New("Pool closed unexpectedly")
+			}
+			return err
+		})
+}
+
+/*
+TestReconnectPingTLSAuth tests the ability of a authenticated encrypted
+connection to automatically re-connect if broken (by Ping/Pong timeout).
+*/
+func TestReconnectPingTLSAuth(t *testing.T) {
+	var (
+		m    sync.Mutex
+		mute bool
+		j    int
+	)
+	testReconnectTLSAuth(t,
+		func(pool *PoolServer) {
+			pool.OnConn = func(ws *websocket.Conn, rq *http.Request) error {
+				h := ws.PingHandler()
+				ws.SetPingHandler(func(appData string) error {
+					m.Lock()
+					_mute := mute
+					if !_mute {
+						j = j + 1
+					}
+					m.Unlock()
+					if !_mute {
+						h(appData)
+					}
+					return nil
+				})
+				return nil
+			}
+			pool.Bind("/")
+		},
+		func(p *Provider) {
+			p.PingInterval = 100 * time.Millisecond
+		},
+		func(pool *PoolServer) error {
+			m.Lock()
+			for j < 3 {
+				m.Unlock()
+				testCalls(t, pool)
+				m.Lock()
+			}
+			mute = true
+			j = 0
+			m.Unlock()
+			return nil
+		},
+		func(pool *PoolServer) error {
+			m.Lock()
+			mute = false
+			m.Unlock()
+			return nil
 		})
 }

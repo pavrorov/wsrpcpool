@@ -77,6 +77,13 @@ func NewPingPong(ws *websocket.Conn, interval time.Duration, max int, event func
 				} else {
 					event(_i, nil)
 				}
+				select {
+				case <-pp.stop:
+					break loop // stopped
+				default:
+					// not stopped
+					t.Reset(interval)
+				}
 			}
 		}
 	}()

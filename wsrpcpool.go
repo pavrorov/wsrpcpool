@@ -44,7 +44,7 @@ type PoolServer struct {
 	// returns true
 	CheckOrigin func(r *http.Request) bool
 	// OnConn handler is called on new connections
-	OnConn func(ws *websocket.Conn) error
+	OnConn func(ws *websocket.Conn, rq *http.Request) error
 }
 
 var (
@@ -267,7 +267,7 @@ func (pool *PoolServer) handle(newClient func(conn io.ReadWriteCloser) *rpc.Clie
 		ws, err := pool.upgrader().Upgrade(rw, rq, nil)
 		if err == nil {
 			if pool.OnConn != nil {
-				err = pool.OnConn(ws)
+				err = pool.OnConn(ws, rq)
 				if err != nil {
 					ws.Close()
 				}
@@ -395,6 +395,14 @@ the given handler.
 func (pool *PoolServer) handleIn(serveConn func(conn io.ReadWriteCloser)) http.HandlerFunc {
 	return http.HandlerFunc(func(rw http.ResponseWriter, rq *http.Request) {
 		ws, err := pool.upgrader().Upgrade(rw, rq, nil)
+		if err == nil {
+			if pool.OnConn != nil {
+				err = pool.OnConn(ws, rq)
+				if err != nil {
+					ws.Close()
+				}
+			}
+		}
 		if err == nil {
 			pool.addCloser(ws)
 			serveConn(wrapConn(ws))

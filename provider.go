@@ -75,10 +75,10 @@ to validate the pool server certificate when wss:// URL scheme is used.
 */
 func NewProvider(rootCAs ...string) (*Provider, error) {
 	p := &Provider{
-		Origin: DefaultOrigin,
-		Delay: DefaultDelay,
+		Origin:       DefaultOrigin,
+		Delay:        DefaultDelay,
 		PingInterval: DefaultPingInterval,
-		MaxPings: DefaultMaxPings,
+		MaxPings:     DefaultMaxPings,
 	}
 	if err := p.AppendRootCAs(rootCAs...); err != nil {
 		return nil, err
@@ -229,7 +229,7 @@ func (p *Provider) connect(url string, serveConn func(conn io.ReadWriteCloser), 
 				case connected <- struct{}{}:
 				default:
 				}
-				
+
 				if callIn != nil {
 					errOut := make(chan error)
 					invoker(newClient, callIn, errOut)(ws)
